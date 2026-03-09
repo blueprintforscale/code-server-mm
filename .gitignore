@@ -1,0 +1,10 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+logs/
+node_modules/
+.claude/
+google-ads.yaml
+.mcp.json
+.slack_channels_cache_v2.json

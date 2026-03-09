@@ -1,0 +1,4 @@
+google-ads==29.1.0
+psycopg2-binary
+python-dotenv
+requests

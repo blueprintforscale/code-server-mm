@@ -1,10 +1,30 @@
 .env
+.env.secrets
 .venv/
 __pycache__/
 *.pyc
 logs/
+*.log
 node_modules/
 .claude/
 google-ads.yaml
 .mcp.json
 .slack_channels_cache_v2.json
+
+# MCP server venvs and credentials
+.mcp-servers/
+
+# Backup files
+*.bak.*
+
+# Launchd logs (captured by launchd, not our scripts)
+launchd-stdout.log
+launchd-stderr.log
+
+# Credentials and tokens
+*credentials*.json
+*_tokens
+*.token
+
+# Large binary files
+brand-guide.pdf

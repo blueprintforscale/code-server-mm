@@ -1,0 +1,1918 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Risk Dashboard — Blueprint for Scale</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, -apple-system, sans-serif; background: #F5F1E8; color: #1a1a1a; font-size: 14px; }
+.header { background: #000; color: #F5F1E8; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+.header h1 { font-size: 20px; font-weight: 600; }
+.header .meta { font-size: 12px; opacity: 0.7; }
+.filters { background: #fff; padding: 12px 24px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+  border-bottom: 1px solid #e0ddd6; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+.filters label { font-size: 12px; font-weight: 600; color: #666; }
+.filters input, .filters select { padding: 6px 10px; border: 1px solid #d0cdc6; border-radius: 4px; font-size: 13px; background: #fff; }
+.filters input[type="date"] { width: 140px; }
+.filters input[type="text"] { width: 180px; }
+.filter-group { display: flex; flex-direction: column; gap: 2px; }
+.summary { display: flex; gap: 16px; padding: 16px 24px; }
+.summary-card { flex: 1; background: #fff; border-radius: 8px; padding: 16px; text-align: center;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+.summary-card .count { font-size: 32px; font-weight: 700; }
+.summary-card .label { font-size: 12px; color: #666; margin-top: 4px; }
+.sc-total .count { color: #333; }
+.sc-risk .count { color: #CC3333; }
+.sc-flag .count { color: #b8860b; }
+.sc-healthy .count { color: #38761D; }
+.table-wrap { padding: 0 24px 24px; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08); font-size: 13px; }
+thead th { background: #1a1a1a; color: #F5F1E8; padding: 10px 8px; text-align: center; font-weight: 600; font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.5px; position: sticky; top: 0; z-index: 10; cursor: pointer; white-space: nowrap; }
+thead th:first-child { text-align: left; position: sticky; left: 0; z-index: 11; background: #1a1a1a; }
+thead th:hover { background: #333; }
+thead th.sorted-asc::after { content: ' \u25B2'; font-size: 9px; }
+thead th.sorted-desc::after { content: ' \u25BC'; font-size: 9px; }
+/* Column group borders */
+thead th.col-group-start { border-left: 2px solid #444; }
+tbody td.col-group-start { border-left: 2px solid #e8e5de; }
+tbody tr { border-bottom: 1px solid #f0ede6; }
+tbody tr:hover { background: #f5f3ee !important; }
+tbody td { padding: 7px 8px; white-space: nowrap; text-align: center; font-size: 12px; cursor: pointer; vertical-align: middle; }
+tbody td:first-child { text-align: left; font-size: 13px; position: sticky; left: 0; z-index: 1; }
+/* Metric cell highlights — red/yellow only, no green */
+.bg-red { background: rgba(220,53,53,0.12) !important; color: #991b1b; font-weight: 600; }
+.bg-light-red { background: rgba(220,53,53,0.06) !important; color: #991b1b; }
+.bg-yellow { background: rgba(184,134,11,0.12) !important; color: #92400e; font-weight: 600; }
+.bg-light-yellow { background: rgba(184,134,11,0.06) !important; color: #92400e; }
+.bg-green { }
+.bg-light-green { }
+/* Status color bar + background on client name */
+td.tier-both-risk { border-left: 5px solid #4a0000 !important; background: #f0b8b8 !important; color: #4a0000 !important; font-weight: 700; }
+td.tier-ads-risk { border-left: 4px solid #CC3333 !important; background: #fde8e8 !important; color: #991b1b !important; font-weight: 700; }
+td.tier-funnel-risk { border-left: 4px solid #d4553a !important; background: #fef0ec !important; color: #9a3412 !important; font-weight: 700; border-left-style: dashed !important; }
+td.tier-flag { border-left: 4px solid #b8860b !important; background: #fef9e7 !important; color: #92400e !important; font-weight: 600; }
+td.tier-healthy { border-left: 4px solid #38761D !important; background: #ecfdf5 !important; color: #065f46 !important; font-weight: 600; }
+.status-cell { font-weight: 700; font-size: 11px; text-transform: uppercase; }
+tbody tr:nth-child(even) td { background: #faf9f6; }
+tbody tr:nth-child(odd) td { background: #fff; }
+/* Sticky first column needs explicit background */
+tbody tr:nth-child(even) td:first-child { background: #faf9f6; }
+tbody tr:nth-child(odd) td:first-child { background: #fff; }
+tbody tr:hover td { background: #f5f3ee !important; }
+
+/* Detail drawer */
+tr.detail-row td { padding: 0; cursor: default; }
+tr.detail-row:hover { background: #faf8f4 !important; }
+.detail-content { padding: 16px 24px; background: #faf8f4; }
+.detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
+.detail-section { overflow-wrap: break-word; word-wrap: break-word; min-width: 0; }
+.detail-section h3 { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: #333; text-align: left; }
+.trigger-list { list-style: none; padding: 0; }
+.trigger-list li { padding: 4px 0; font-size: 12px; color: #555; text-align: left; }
+.trigger-list li::before { content: '\26A0'; margin-right: 6px; }
+.trigger-list.risk-list li::before { content: '\2718'; color: #CC3333; }
+.trigger-list.flag-list li::before { content: '\26A0'; color: #b8860b; }
+.drill-table { width: 100%; font-size: 12px; border-collapse: collapse; margin-top: 8px; }
+.drill-table th { background: #e8e5de; color: #333; padding: 6px 8px; text-align: left; font-size: 11px; font-weight: 600; }
+.drill-table td { padding: 5px 8px; border-bottom: 1px solid #f0ede6; text-align: left; }
+.drill-table tr:hover { background: #f0ede6; }
+.drill-title { font-size: 14px; font-weight: 700; margin-bottom: 12px; color: #000; text-align: left; }
+.drill-subtitle { font-size: 12px; color: #666; margin-bottom: 12px; text-align: left; }
+.loading { text-align: center; padding: 60px; color: #999; }
+.loading-sm { color: #999; font-size: 12px; padding: 12px 0; text-align: left; }
+/* Column highlight on drill-down */
+th.col-highlight { background: #333 !important; }
+td.col-highlight { outline: 2px solid #E85D4D; outline-offset: -2px; }
+
+/* Editable budget */
+td.editable-budget { cursor: pointer; position: relative; }
+td.editable-budget:hover { outline: 2px solid #000; outline-offset: -2px; }
+.budget-edit { display: flex; align-items: center; gap: 4px; }
+.budget-edit input { width: 80px; padding: 3px 6px; border: 1px solid #000; border-radius: 3px; font-size: 12px; text-align: right; }
+.budget-edit button { padding: 3px 8px; font-size: 11px; border: none; border-radius: 3px; cursor: pointer; }
+.budget-edit .save-btn { background: #000; color: #F5F1E8; }
+.budget-edit .cancel-btn { background: #e8e5de; color: #333; }
+
+/* Monthly risk detail drawer (right side) */
+.month-drawer-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.3); z-index:9000; }
+.month-drawer-overlay.open { display:block; }
+.month-drawer { position:fixed; top:0; right:-520px; width:520px; height:100vh; background:#fff; z-index:9001;
+  box-shadow:-4px 0 24px rgba(0,0,0,0.15); transition:right 0.25s ease; overflow-y:auto; font-family:system-ui,sans-serif; }
+.month-drawer.open { right:0; }
+.month-drawer-header { position:sticky; top:0; background:#fff; padding:20px 24px 16px; border-bottom:1px solid #e8e5de; z-index:1; }
+.month-drawer-header h2 { margin:0 0 4px; font-size:18px; color:#000; }
+.month-drawer-header .subtitle { font-size:12px; color:#888; }
+.month-drawer-close { position:absolute; top:16px; right:16px; background:none; border:none; font-size:22px; cursor:pointer; color:#999; padding:4px 8px; }
+.month-drawer-close:hover { color:#000; }
+.month-drawer-body { padding:16px 24px 40px; }
+.month-drawer .client-row { padding:12px 0; border-bottom:1px solid #f0ede6; }
+.month-drawer .client-row:last-child { border-bottom:none; }
+.month-drawer .client-name { font-weight:600; font-size:13px; color:#000; margin-bottom:4px; }
+.month-drawer .client-meta { display:flex; gap:12px; font-size:11px; color:#888; margin-bottom:6px; }
+.month-drawer .status-badge { display:inline-block; padding:2px 8px; border-radius:3px; font-size:10px; font-weight:600; }
+.month-drawer .status-badge.risk { background:#fde8e8; color:#CC3333; }
+.month-drawer .status-badge.flag { background:#fef3cd; color:#856404; }
+.month-drawer .status-badge.healthy { background:#d4edda; color:#1a3d10; }
+.month-drawer .trigger-item { font-size:11px; color:#555; padding:2px 0 2px 16px; position:relative; }
+.month-drawer .trigger-item::before { position:absolute; left:0; }
+.month-drawer .trigger-item.risk-trigger::before { content:'\2718'; color:#CC3333; }
+.month-drawer .trigger-item.flag-trigger::before { content:'\26A0'; color:#b8860b; }
+.month-drawer .section-header { font-size:12px; font-weight:700; color:#333; padding:12px 0 8px; margin-top:8px;
+  border-bottom:1px solid #e8e5de; display:flex; justify-content:space-between; }
+.month-drawer .section-count { font-weight:400; color:#888; }
+
+@media (max-width: 1200px) {
+  .filters { padding: 8px 12px; gap: 8px; }
+  .summary { padding: 12px; gap: 8px; }
+  .table-wrap { padding: 0 12px 12px; }
+}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1 id="dashTitle">Risk Dashboard</h1>
+  <div class="meta">
+    <span id="lastUpdated"></span>
+    <span id="autoRefresh" style="margin-left:12px; opacity:0.5">Auto-refresh: 5m</span>
+  </div>
+</div>
+<div class="filters">
+  <div class="filter-group"><label>Start Date</label><input type="date" id="filterStart"></div>
+  <div class="filter-group"><label>End Date</label><input type="date" id="filterEnd"></div>
+  <div class="filter-group"><label>Manager</label><select id="filterManager"><option value="">All</option></select></div>
+  <div class="filter-group"><label>Status</label>
+    <select id="filterStatus"><option value="">All</option><option value="Risk">Risk</option><option value="Flag">Flag</option><option value="Healthy">Healthy</option></select>
+  </div>
+  <div class="filter-group"><label>Search</label><input type="text" id="filterSearch" placeholder="Client name..."></div>
+  <button onclick="loadData()" style="padding:6px 16px;background:#000;color:#F5F1E8;border:none;border-radius:4px;cursor:pointer;align-self:flex-end">Apply</button>
+</div>
+<div class="summary">
+  <div class="summary-card sc-total"><div class="count" id="countTotal">-</div><div class="label">Total Clients</div></div>
+  <div class="summary-card sc-risk"><div class="count" id="countRisk">-</div><div class="label" id="labelRisk">At Risk</div></div>
+  <div class="summary-card sc-flag"><div class="count" id="countFlag">-</div><div class="label" id="labelFlag">Flagged</div></div>
+  <div class="summary-card sc-healthy"><div class="count" id="countHealthy">-</div><div class="label" id="labelHealthy">Healthy</div></div>
+</div>
+<div id="movementBar" style="padding:0 24px;display:none">
+  <div style="background:#fff;border-radius:8px;padding:12px 16px;box-shadow:0 1px 3px rgba(0,0,0,0.08);font-size:12px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;cursor:pointer" onclick="toggleMovementHistory()">
+    <span style="font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:0.3px;color:#666">7-Day Movement</span>
+    <span id="movementContent"></span>
+    <span id="movementToggle" style="margin-left:auto;font-size:10px;color:#999">&#9660; History</span>
+  </div>
+  <div id="movementHistory" style="display:none;margin-top:8px;background:#fff;border-radius:8px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,0.08)">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+      <label style="display:flex;align-items:center;gap:6px;font-size:11px;color:#666;cursor:pointer;user-select:none">
+        <input type="checkbox" id="crmSpamToggle" checked onchange="toggleCrmSpam()" style="cursor:pointer">
+        <span>CRM Spam Adjusted</span>
+      </label>
+      <span id="crmSpamHint" style="font-size:10px;color:#999"></span>
+    </div>
+    <div id="riskTrendChart" style="margin-bottom:16px"></div>
+    <div style="font-weight:700;font-size:13px;margin-bottom:12px">Status Changes by Week</div>
+    <div id="movementHistoryContent"><p style="color:#999;font-size:12px">Loading...</p></div>
+  </div>
+</div>
+<div class="table-wrap">
+  <table id="dashTable">
+    <thead>
+      <tr>
+        <th data-key="client_name" data-drill="summary">Client</th>
+        <th data-key="ads_manager" data-drill="summary">Manager</th>
+        <th data-key="quality_leads" data-type="num" data-drill="leads" class="col-group-start">Contacts</th>
+        <th data-key="quality_count" data-type="num" data-drill="leads">Quality</th>
+        <th data-key="cpl" data-type="num" data-drill="leads">CPL</th>
+        <th data-key="lead_volume_change" data-type="num" data-drill="leads">Volume</th>
+        <th data-key="insp_booked_pct" data-type="num" data-drill="inspections" class="col-group-start">Book %</th>
+        <th data-key="roas" data-type="num" data-drill="revenue">ROAS</th>
+        <th data-key="trailing_3mo_roas" data-type="num" data-drill="revenue">3mo ROAS</th>
+        <th data-key="on_cal_14d" data-type="num" data-drill="calendar">On Cal</th>
+        <th data-key="days_since_lead" data-type="num" data-drill="leads">Stale</th>
+        <th data-key="guarantee" data-type="num" data-drill="revenue">Guarantee</th>
+        <th data-key="call_answer_rate" data-type="num" data-drill="summary" class="col-group-start">Answer</th>
+        <th data-key="spam_rate" data-type="num" data-drill="spam">Spam</th>
+        <th data-key="abandoned_rate" data-type="num" data-drill="abandoned">Aband.</th>
+        <th data-key="budget" data-type="num" data-drill="summary" class="col-group-start">Budget</th>
+        <th data-key="ad_spend" data-type="num" data-drill="summary">Spend</th>
+        <th data-key="lsa_spend" data-type="num" data-drill="summary">LSA</th>
+        <th data-key="total_closed_rev" data-type="num" data-drill="revenue">Rev</th>
+        <th data-key="months_in_program" data-type="num" data-drill="summary">Mo</th>
+        <th data-key="sort_priority" data-type="num" data-drill="summary">Status</th>
+      </tr>
+    </thead>
+    <tbody id="dashBody">
+      <tr><td colspan="20" class="loading">Loading dashboard...</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+const IS_MANAGER = !!window.MANAGER_MODE;
+const MANAGER_NAME = window.MANAGER_MODE || null;
+const MANAGER_TOKEN = window.MANAGER_TOKEN || null;
+
+// Add manager token to all fetch calls
+const _origFetch = window.fetch;
+if (MANAGER_TOKEN) {
+  window.fetch = function(url, opts) {
+    opts = opts || {};
+    opts.headers = opts.headers || {};
+    if (typeof opts.headers.set === 'function') {
+      opts.headers.set('X-Manager-Token', MANAGER_TOKEN);
+    } else {
+      opts.headers['X-Manager-Token'] = MANAGER_TOKEN;
+    }
+    return _origFetch.call(this, url, opts);
+  };
+}
+
+let allData = [];
+let sortKey = 'sort_priority';
+let sortDir = 'asc';
+
+// Column index to drill-down type mapping
+const COL_DRILLS = [];
+document.querySelectorAll('#dashTable thead th').forEach((th, i) => {
+  COL_DRILLS[i] = th.dataset.drill || 'summary';
+});
+
+(function init() {
+  // Manager mode: personalize header, hide manager filter, disable budget editing
+  if (IS_MANAGER) {
+    document.getElementById('dashTitle').textContent = MANAGER_NAME + "'s Accounts";
+    // Hide the manager filter
+    const mgrFilter = document.getElementById('filterManager').closest('.filter-group');
+    if (mgrFilter) mgrFilter.style.display = 'none';
+  }
+
+  const end = new Date();
+  const start = new Date();
+  start.setDate(start.getDate() - 30);
+  document.getElementById('filterStart').value = fmt(start);
+  document.getElementById('filterEnd').value = fmt(end);
+  loadData();
+  setInterval(loadData, 5 * 60 * 1000);
+  document.querySelectorAll('#dashTable thead th').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.key;
+      if (!key) return;
+      if (sortKey === key) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+      else { sortKey = key; sortDir = 'asc'; }
+      renderTable();
+    });
+  });
+})();
+
+function fmt(d) { return d.toISOString().split('T')[0]; }
+
+const numericFields = ['budget','lead_volume_change','ad_spend','all_time_spend','cpl',
+  'spam_rate','abandoned_rate','call_answer_rate','insp_booked_pct',
+  'total_closed_rev','total_open_est_rev','approved_no_inv','all_time_rev','roas','period_potential_roas','guarantee','lsa_spend',
+  'trailing_6mo_roas','trailing_6mo_potential_roas','trailing_3mo_roas','trailing_3mo_potential_roas'];
+function normalizeRow(r) {
+  for (const f of [...numericFields, 'prior_cpl']) { r[f] = (r[f] != null) ? Number(r[f]) : 0; }
+  for (const f of ['quality_leads','prior_quality_leads','actual_quality_leads','prior_actual_quality_leads',
+    'spam_contacts','total_calls','days_since_lead',
+    'total_insp_booked','on_cal_14d','on_cal_total','lsa_leads','months_in_program','flag_count','sort_priority']) {
+    r[f] = (r[f] != null) ? Number(r[f]) : 0;
+  }
+  // Quality = actual quality leads (contacts minus GHL-confirmed spam, from SQL)
+  r.quality_count = r.actual_quality_leads;
+  // 30-day rolling volume change (actual quality leads vs prior)
+  r.rolling_30d = r.prior_actual_quality_leads > 0
+    ? Math.round((r.actual_quality_leads - r.prior_actual_quality_leads) / r.prior_actual_quality_leads * 100)
+    : null;
+  return r;
+}
+
+async function loadData() {
+  try {
+    const start = document.getElementById('filterStart').value;
+    const end = document.getElementById('filterEnd').value;
+    const [dashResp, paceResp, trendResp, r14dResp, changesResp] = await Promise.all([
+      fetch(`/api/dashboard?start=${start}&end=${end}`),
+      fetch('/api/monthly-pace'),
+      fetch(`/api/trends?start=${start}&end=${end}`),
+      fetch('/api/rolling-14d'),
+      fetch('/api/status-changes')
+    ]);
+    if (dashResp.status === 401) { location.reload(); return; }
+    allData = (await dashResp.json()).map(normalizeRow);
+    // Merge trend data
+    const trendData = await trendResp.json();
+    // Merge monthly pace data
+    const paceData = await paceResp.json();
+    const paceMap = {};
+    const now = new Date();
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const dayOfMonth = now.getDate();
+    paceData.forEach(p => {
+      const thisMonth = Number(p.this_month);
+      const lastMonth = Number(p.last_month);
+      const projected = Math.round(thisMonth / (dayOfMonth / daysInMonth));
+      if (lastMonth > 0) {
+        paceMap[p.customer_id] = Math.round((projected - lastMonth) / lastMonth * 100);
+      }
+    });
+    // Merge rolling 14d data
+    const r14dData = await r14dResp.json();
+    const r14dMap = {};
+    r14dData.forEach(d => { r14dMap[d.customer_id] = d; });
+    allData.forEach(r => {
+      r.monthly_pace = paceMap[r.customer_id] ?? null;
+      r.trend = trendData[r.customer_id] || null;
+      const d14 = r14dMap[r.customer_id];
+      if (d14) {
+        r.r14d_leads_recent = Number(d14.leads_recent);
+        r.r14d_leads_prior = Number(d14.leads_prior);
+        r.r14d_spend_recent = Number(d14.spend_recent);
+        r.r14d_spend_prior = Number(d14.spend_prior);
+        r.r14d_cpl_recent = r.r14d_leads_recent > 0 ? r.r14d_spend_recent / r.r14d_leads_recent : null;
+        r.r14d_cpl_prior = r.r14d_leads_prior > 0 ? r.r14d_spend_prior / r.r14d_leads_prior : null;
+        r.r14d_vol_change = r.r14d_leads_prior > 0
+          ? (r.r14d_leads_recent - r.r14d_leads_prior) / r.r14d_leads_prior
+          : (r.r14d_leads_recent > 0 ? 1 : null);
+        // 7-day lookback
+        r.r7d_leads = Number(d14.leads_7d);
+        r.r7d_leads_prior = Number(d14.leads_7d_prior);
+        r.r7d_spend = Number(d14.spend_7d);
+        r.r7d_spend_prior = Number(d14.spend_7d_prior);
+        r.r7d_cpl = r.r7d_leads > 0 ? r.r7d_spend / r.r7d_leads : null;
+        r.r7d_cpl_prior = r.r7d_leads_prior > 0 ? r.r7d_spend_prior / r.r7d_leads_prior : null;
+        r.r7d_vol_change = r.r7d_leads_prior > 0
+          ? (r.r7d_leads - r.r7d_leads_prior) / r.r7d_leads_prior
+          : (r.r7d_leads > 0 ? 1 : null);
+      }
+    });
+    // Compute recovery state for sort ordering
+    allData.forEach(r => {
+      if (r.status === 'Healthy') {
+        // Healthy: direction based on 14d signals (down-trending sorts to top)
+        let good = 0, bad = 0;
+        if (r.r14d_vol_change != null) { r.r14d_vol_change >= 0 ? good++ : bad++; }
+        if (r.r14d_cpl_recent != null && r.r14d_cpl_prior != null && r.r14d_cpl_prior > 0) { r.r14d_cpl_recent <= r.r14d_cpl_prior ? good++ : bad++; }
+        if (r.trend && r.trend.roas_delta != null) { r.trend.roas_delta >= 0 ? good++ : bad++; }
+        if (r.trend && r.trend.book_delta != null && r.trend.book_delta !== 0) { r.trend.book_delta >= 0 ? good++ : bad++; }
+        r._recovering = good >= bad;
+      } else {
+        const rec = checkTriggerRecovery(r);
+        r._recovering = rec.recovering;
+      }
+    });
+    // Merge status change data (days_in_status, movement)
+    const changesData = changesResp.ok ? await changesResp.json() : [];
+    const changesMap = {};
+    changesData.forEach(c => { changesMap[c.customer_id] = c; });
+    allData.forEach(r => {
+      const ch = changesMap[r.customer_id];
+      if (ch) {
+        r.days_in_status = Number(ch.days_in_status) || 0;
+        r.days_at_floor = ch.days_at_floor;
+        r.movement = ch.movement;
+        r.prior_status = ch.prior_status;
+        r.status_since = ch.status_since;
+      }
+    });
+    renderMovementBar(changesData);
+    populateManagerFilter();
+    renderTable();
+    document.getElementById('lastUpdated').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+  } catch (err) {
+    document.getElementById('dashBody').innerHTML =
+      '<tr><td colspan="20" class="loading" style="color:#CC3333">Error: ' + err.message + '</td></tr>';
+  }
+}
+
+function populateManagerFilter() {
+  const sel = document.getElementById('filterManager');
+  const cur = sel.value;
+  const mgrs = [...new Set(allData.map(r => r.ads_manager).filter(Boolean))].sort();
+  sel.innerHTML = '<option value="">All</option>' + mgrs.map(m => `<option value="${m}">${m}</option>`).join('');
+  sel.value = cur;
+}
+
+function getFilteredData() {
+  const mgr = document.getElementById('filterManager').value;
+  const st = document.getElementById('filterStatus').value;
+  const q = document.getElementById('filterSearch').value.toLowerCase();
+  return allData.filter(r => {
+    if (mgr && r.ads_manager !== mgr) return false;
+    if (st && r.status !== st) return false;
+    if (q && !r.client_name.toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+
+function sortData(data) {
+  return [...data].sort((a, b) => {
+    // Default sort: within each status tier, non-recovering first
+    if (sortKey === 'sort_priority') {
+      if (a.sort_priority !== b.sort_priority) return a.sort_priority - b.sort_priority;
+      // Drift badges float to top of their status group (not shown for Risk)
+      const aDrift = (a.status !== 'Risk' && hasDriftBadge(a)) ? 0 : 1;
+      const bDrift = (b.status !== 'Risk' && hasDriftBadge(b)) ? 0 : 1;
+      if (aDrift !== bDrift) return aDrift - bDrift;
+      const aRec = a._recovering ? 1 : 0;
+      const bRec = b._recovering ? 1 : 0;
+      if (aRec !== bRec) return aRec - bRec;
+      return a.client_name.localeCompare(b.client_name);
+    }
+    let av = a[sortKey], bv = b[sortKey];
+    if (av == null) av = sortDir === 'asc' ? Infinity : -Infinity;
+    if (bv == null) bv = sortDir === 'asc' ? Infinity : -Infinity;
+    if (typeof av === 'string') return sortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+    return sortDir === 'asc' ? av - bv : bv - av;
+  });
+}
+
+function renderMovementBar(changes) {
+  const bar = document.getElementById('movementBar');
+  const content = document.getElementById('movementContent');
+  if (!changes || !changes.length) { bar.style.display = 'none'; return; }
+
+  const entered_risk = changes.filter(c => c.movement === 'entered_risk');
+  const left_risk = changes.filter(c => c.movement === 'left_risk');
+  const entered_flag = changes.filter(c => c.movement === 'entered_flag');
+  const left_flag = changes.filter(c => c.movement === 'left_flag');
+
+  const fmtSince = (c) => c.status_since ? new Date(c.status_since + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+  const clientLabel = (c) => { const name = c.client_name.split('|')[0].trim().split(' ').pop(); const d = fmtSince(c); return name + (d ? ' <span style="font-weight:600;color:#555;font-size:11px">(' + d + ')</span>' : ''); };
+
+  const parts = [];
+  if (entered_risk.length) parts.push('<span style="color:#CC3333;font-weight:600">' + entered_risk.length + ' entered Risk</span> <span style="cursor:help" title="' + entered_risk.map(c => c.client_name).join(', ') + '">(' + entered_risk.map(clientLabel).join(', ') + ')</span>');
+  if (left_risk.length) parts.push('<span style="color:#38761D;font-weight:600">' + left_risk.length + ' left Risk</span> <span style="cursor:help" title="' + left_risk.map(c => c.client_name).join(', ') + '">(' + left_risk.map(clientLabel).join(', ') + ')</span>');
+  if (entered_flag.length) parts.push('<span style="color:#b8860b;font-weight:600">' + entered_flag.length + ' entered Flag</span> <span style="cursor:help" title="' + entered_flag.map(c => c.client_name).join(', ') + '">(' + entered_flag.map(clientLabel).join(', ') + ')</span>');
+  if (left_flag.length) parts.push('<span style="color:#38761D;font-weight:600">' + left_flag.length + ' left Flag</span> <span style="cursor:help" title="' + left_flag.map(c => c.client_name).join(', ') + '">(' + left_flag.map(clientLabel).join(', ') + ')</span>');
+
+  if (parts.length === 0) {
+    content.innerHTML = '<span style="color:#38761D">No status changes this week</span>';
+  } else {
+    content.innerHTML = parts.join(' <span style="color:#ccc">&middot;</span> ');
+  }
+  bar.style.display = 'block';
+}
+
+let movementHistoryLoaded = false;
+let _trendDataAdjusted = null;
+let _trendDataRaw = null;
+
+async function toggleMovementHistory() {
+  const panel = document.getElementById('movementHistory');
+  const toggle = document.getElementById('movementToggle');
+  if (panel.style.display === 'none') {
+    panel.style.display = 'block';
+    toggle.innerHTML = '&#9650; Hide';
+    if (!movementHistoryLoaded) {
+      movementHistoryLoaded = true;
+      try {
+        const [histResp, trendResp, trendRawResp] = await Promise.all([
+          fetch('/api/status-history'),
+          fetch('/api/risk-trend'),
+          fetch('/api/risk-trend?raw=1')
+        ]);
+        const grid = await histResp.json();
+        _trendDataAdjusted = await trendResp.json();
+        _trendDataRaw = await trendRawResp.json();
+        const isAdjusted = document.getElementById('crmSpamToggle').checked;
+        renderRiskTrendChart(isAdjusted ? _trendDataAdjusted : _trendDataRaw);
+        updateCrmSpamHint(isAdjusted);
+        renderStatusHeatmap(grid);
+      } catch (err) {
+        document.getElementById('movementHistoryContent').innerHTML = '<p style="color:#CC3333;font-size:12px">Error: ' + err.message + '</p>';
+      }
+    }
+  } else {
+    panel.style.display = 'none';
+    toggle.innerHTML = '&#9660; History';
+  }
+}
+
+function renderRiskTrendChart(data) {
+  const el = document.getElementById('riskTrendChart');
+  if (!data || data.length < 2) { el.innerHTML = ''; return; }
+
+  const points = data;
+  const W = 750, H = 260, PAD_L = 40, PAD_R = 70, PAD_T = 30, PAD_B = 40;
+  const plotW = W - PAD_L - PAD_R, plotH = H - PAD_T - PAD_B;
+  // Round maxY up to nearest 5
+  const rawMax = Math.max(...points.map(d => Math.max(Number(d.ads_risk_count), Number(d.flag_count), Number(d.healthy_count))), 1);
+  const maxY = Math.ceil(rawMax / 5) * 5;
+
+  const x = (i) => PAD_L + (i / (points.length - 1)) * plotW;
+  const y = (v) => PAD_T + plotH - (v / maxY) * plotH;
+
+  const line = (pts, key) => pts.map((d, i) => (i === 0 ? 'M' : 'L') + x(i).toFixed(1) + ',' + y(Number(d[key])).toFixed(1)).join(' ');
+
+  // Monthly x-axis labels
+  const dateLabels = points.map((d, i) => {
+    const iso = typeof d.snapshot_date === 'string' ? d.snapshot_date : new Date(d.snapshot_date).toISOString();
+    const mo = iso.substring(5, 7);
+    const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const label = monthNames[Number(mo) - 1];
+    return `<text x="${x(i)}" y="${H - 5}" text-anchor="middle" font-size="10" fill="#666">${label}</text>`;
+  }).join('');
+
+  // Y-axis labels at increments of 5
+  const yLabels = [];
+  for (let val = 0; val <= maxY; val += 5) {
+    const yPos = y(val);
+    yLabels.push(`<text x="${PAD_L - 8}" y="${yPos + 3}" text-anchor="end" font-size="9" fill="#999">${val}</text>`);
+    yLabels.push(`<line x1="${PAD_L}" x2="${W - PAD_R}" y1="${yPos}" y2="${yPos}" stroke="${val === 0 ? '#ddd' : '#f0ede6'}" stroke-width="1"/>`);
+  }
+
+  // Store points globally for popup access
+  window._trendPoints = points;
+  window._trendMonthNames = points.map((d, i) => {
+    const iso = typeof d.snapshot_date === 'string' ? d.snapshot_date : new Date(d.snapshot_date).toISOString();
+    const mo = iso.substring(5, 7);
+    const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    return monthNames[Number(mo) - 1];
+  });
+
+  // Hover hit areas for floating tooltip + click to open drawer
+  const hitAreas = points.map((d, i) => {
+    const colW = plotW / points.length;
+    const iso = typeof d.snapshot_date === 'string' ? d.snapshot_date : new Date(d.snapshot_date).toISOString();
+    const monthStart = iso.substring(0, 10);
+    const fullMonthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const moLabel = fullMonthNames[Number(iso.substring(5, 7)) - 1] + ' ' + iso.substring(0, 4);
+    return `<rect x="${x(i) - colW/2}" y="${PAD_T}" width="${colW}" height="${plotH}" fill="transparent" style="cursor:pointer" onmouseenter="showTrendTooltip(event, ${i})" onmouseleave="hideTrendTooltip()" onclick="hideTrendTooltip(); openMonthDrawer('${monthStart}', '${moLabel}')"/>`;
+  }).join('');
+
+  // Smart label placement: avoid collisions between the 3 series
+  const smartLabels = points.map((d, i) => {
+    const r = Number(d.ads_risk_count), f = Number(d.flag_count), h = Number(d.healthy_count);
+    const yr = y(r), yf = y(f), yh = y(h);
+    const cx = x(i);
+    let labels = [];
+
+    // Collect all three values with their y positions
+    let items = [
+      { val: r, yBase: yr, color: '#CC3333', key: 'risk' },
+      { val: f, yBase: yf, color: '#b8860b', key: 'flag' },
+      { val: h, yBase: yh, color: '#38761D', key: 'healthy' }
+    ];
+
+    // Sort by y position (top of chart = smallest y value)
+    items.sort((a, b) => a.yBase - b.yBase);
+
+    // Place labels with minimum spacing of 12px
+    const minGap = 12;
+    let positions = [];
+    items.forEach((item, idx) => {
+      let labelY = item.yBase - 9; // default: above the dot
+      // If this label would collide with the previous one, push it down
+      if (idx > 0 && labelY < positions[idx - 1] + minGap) {
+        labelY = positions[idx - 1] + minGap;
+      }
+      positions.push(labelY);
+      const opacity = item.key === 'healthy' ? '0.7' : '1';
+      labels.push(`<circle cx="${cx}" cy="${item.yBase}" r="3.5" fill="${item.color}" opacity="${opacity}"/>`);
+      labels.push(`<text x="${cx + 6}" y="${labelY + 3}" text-anchor="start" font-size="9" fill="${item.color}" font-weight="600" opacity="${opacity}">${item.val}</text>`);
+    });
+    return labels.join('');
+  }).join('');
+
+  const svg = `<svg width="100%" viewBox="0 0 ${W} ${H}" style="font-family:system-ui,sans-serif">
+    ${yLabels.join('')}
+    <path d="${line(points, 'ads_risk_count')}" fill="none" stroke="#CC3333" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="${line(points, 'flag_count')}" fill="none" stroke="#b8860b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="6,3"/>
+    <path d="${line(points, 'healthy_count')}" fill="none" stroke="#38761D" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
+    ${smartLabels}
+    ${hitAreas}
+    ${dateLabels}
+  </svg>`;
+
+  const legend = `<div style="display:flex;gap:16px;font-size:11px;color:#666;margin-top:4px">
+    <span><span style="display:inline-block;width:16px;height:2px;background:#CC3333;vertical-align:middle;margin-right:4px"></span>At Risk</span>
+    <span><span style="display:inline-block;width:16px;height:2px;background:#b8860b;vertical-align:middle;margin-right:4px;border-top:2px dashed #b8860b;height:0"></span>Flagged</span>
+    <span><span style="display:inline-block;width:16px;height:2px;background:#38761D;vertical-align:middle;margin-right:4px;opacity:0.5"></span>Healthy</span>
+  </div>`;
+
+  const methodology = `<div style="margin-top:10px;padding:10px 12px;background:#faf9f6;border-radius:6px;font-size:11px;color:#888;line-height:1.5">
+    <strong style="color:#666">How this chart works:</strong> Risk status is computed daily using a rolling 30-day window.
+    Includes both ads risk (CPL, lead volume, lead count) and funnel risk (not on track for a successful end-of-program call).
+    A client counts toward a month if they held that status for at least 14 days (filters out brief fluctuations).
+    Hover over any month to see the client breakdown.
+  </div>`;
+
+  // Add floating tooltip container (hidden by default)
+  el.innerHTML = '<div style="font-weight:700;font-size:13px;margin-bottom:8px">Monthly Risk Trend</div>' + svg + legend + methodology +
+    '<div id="trendTooltip" style="display:none;position:fixed;z-index:9999;pointer-events:none;background:#fff;border:1px solid #e0ddd6;border-radius:8px;padding:10px 14px;box-shadow:0 4px 16px rgba(0,0,0,0.15);font-size:11px;max-width:300px;line-height:1.6"></div>';
+}
+
+function showTrendTooltip(evt, idx) {
+  const d = window._trendPoints[idx];
+  const prev = idx > 0 ? window._trendPoints[idx - 1] : null;
+  const month = window._trendMonthNames[idx];
+  const tip = document.getElementById('trendTooltip');
+
+  const shortName = (n) => { const p = n.split(' | '); return p.length > 1 ? p[1] : p[0]; };
+
+  const toArr = (v) => Array.isArray(v) ? v : [];
+  const riskClients = toArr(d.ads_risk_clients).map(shortName);
+  const flagClients = toArr(d.flag_clients).map(shortName);
+  const recovered = toArr(d.recovered_clients).map(shortName);
+  const prevRisk = prev ? toArr(prev.ads_risk_clients).map(shortName) : [];
+  const prevFlag = prev ? toArr(prev.flag_clients).map(shortName) : [];
+  const prevHealthy = prev ? toArr(prev.healthy_clients).map(shortName) : [];
+  const prevAll = [...prevRisk, ...prevFlag, ...prevHealthy];
+
+  // Who was in risk last month but is now fully healthy (not in any risk/flag list)?
+  // Only show if they weren't already healthy last month (true transition)
+  const nowHealthy = toArr(d.healthy_clients).map(shortName);
+  const exitedToHealthy = prevRisk.filter(n => nowHealthy.includes(n) && !riskClients.includes(n) && !prevHealthy.includes(n));
+
+  // Sort risk clients: continuing risk first, then new to risk, then recovered
+  const riskSorted = [
+    ...riskClients.filter(n => !recovered.includes(n) && prev && prevRisk.includes(n)),
+    ...riskClients.filter(n => !recovered.includes(n) && (!prev || !prevRisk.includes(n))),
+    ...riskClients.filter(n => recovered.includes(n))
+  ];
+
+  const prevRecovered = prev ? toArr(prev.recovered_clients).map(shortName) : [];
+
+  const riskBadge = (name) => {
+    // Recovered mid-month — only show if they weren't already recovered last month
+    if (recovered.includes(name) && !prevRecovered.includes(name)) return '::recovered::';
+    // New to risk this month (wasn't in risk last month)
+    if (prev && !prevRisk.includes(name) && !recovered.includes(name)) return ' <span style="background:#fde8e8;color:#CC3333;font-size:9px;padding:1px 5px;border-radius:3px;font-weight:600;margin-left:3px">new to risk</span>';
+    return '';
+  };
+
+  const flagBadge = (name) => {
+    if (prev && !prevFlag.includes(name) && !prevRisk.includes(name)) return ' <span style="background:#fef3cd;color:#856404;font-size:9px;padding:1px 5px;border-radius:3px;font-weight:600;margin-left:3px">new to flag</span>';
+    return '';
+  };
+
+  let html = `<div style="font-weight:700;font-size:12px;margin-bottom:6px;border-bottom:1px solid #eee;padding-bottom:4px">${month}</div>`;
+
+  if (riskSorted.length || exitedToHealthy.length) {
+    html += `<div style="margin-bottom:4px"><span style="color:#CC3333;font-weight:600">At Risk (${riskClients.length})</span></div>`;
+    html += `<div style="margin-bottom:6px;color:#555">${riskSorted.map(n => {
+      const b = riskBadge(n);
+      if (b === '::recovered::') return '<span style="text-decoration:line-through;opacity:0.6">' + n + '</span> <span style="background:#b6d7a8;color:#1a3d10;font-size:9px;padding:1px 5px;border-radius:3px;font-weight:600">now healthy</span>';
+      return n + b;
+    }).concat(exitedToHealthy.map(n => '<span style="text-decoration:line-through;opacity:0.6">' + n + '</span> <span style="background:#b6d7a8;color:#1a3d10;font-size:9px;padding:1px 5px;border-radius:3px;font-weight:600">now healthy</span>')).join('<br>')}</div>`;
+  }
+  if (flagClients.length) {
+    html += `<div style="margin-bottom:4px"><span style="color:#b8860b;font-weight:600">Flag (${flagClients.length})</span></div>`;
+    html += `<div style="margin-bottom:6px;color:#555">${flagClients.map(n => n + flagBadge(n)).join('<br>')}</div>`;
+  }
+  if (nowHealthy.length) {
+    html += `<div style="margin-bottom:4px"><span style="color:#38761D;font-weight:600">Healthy (${nowHealthy.length})</span></div>`;
+    html += `<div style="color:#555">${nowHealthy.join('<br>')}</div>`;
+  }
+
+  tip.innerHTML = html;
+  tip.style.display = 'block';
+
+  // Position near cursor
+  const tipW = tip.offsetWidth;
+  const tipH = tip.offsetHeight;
+  let left = evt.clientX + 16;
+  let top = evt.clientY - tipH / 2;
+
+  // Keep on screen
+  if (left + tipW > window.innerWidth - 10) left = evt.clientX - tipW - 16;
+  if (top < 10) top = 10;
+  if (top + tipH > window.innerHeight - 10) top = window.innerHeight - tipH - 10;
+
+  tip.style.left = left + 'px';
+  tip.style.top = top + 'px';
+}
+
+function hideTrendTooltip() {
+  const tip = document.getElementById('trendTooltip');
+  if (tip) tip.style.display = 'none';
+}
+
+function renderStatusHeatmap(data) {
+  const el = document.getElementById('movementHistoryContent');
+  if (!data.length) {
+    el.innerHTML = '<p style="color:#999;font-size:12px">No history data.</p>';
+    return;
+  }
+
+  // Build grid: { clientName: { month: status } }
+  const clients = {};
+  const months = new Set();
+  data.forEach(r => {
+    const name = r.client_name;
+    const mo = String(r.month_start).substring(0, 7);
+    months.add(mo);
+    if (!clients[name]) clients[name] = {};
+    clients[name][mo] = r.status;
+  });
+
+  const sortedMonths = [...months].sort();
+  const monthLabels = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const moLabel = (m) => monthLabels[parseInt(m.split('-')[1]) - 1];
+
+  // Sort clients: most risk days first
+  const clientNames = Object.keys(clients).sort((a, b) => {
+    const riskA = sortedMonths.filter(m => clients[a][m] === 'ads_risk').length;
+    const riskB = sortedMonths.filter(m => clients[b][m] === 'ads_risk').length;
+    return riskB - riskA;
+  });
+
+  const shortName = (n) => { const p = n.split(' | '); return p.length > 1 ? p[1] : p[0]; };
+
+  // Status colors and symbols
+  const cellStyle = (status) => {
+    switch(status) {
+      case 'ads_risk': return 'background:#CC3333;color:#fff';
+      case 'flag': return 'background:#f5d98a;color:#333';
+      case 'healthy': return 'background:#b6d7a8;color:#1a3d10';
+      default: return 'background:#f5f1e8;color:#ccc';
+    }
+  };
+  const cellIcon = (status, prevStatus) => {
+    if (!prevStatus || !status) return '';
+    const rank = { ads_risk: 4, funnel_risk: 3, flag: 2, mixed: 1.5, healthy: 1 };
+    const prev = rank[prevStatus] || 0;
+    const curr = rank[status] || 0;
+    if (curr > prev) return ' &#9650;'; // entered/escalated
+    if (curr < prev) return ' &#9660;'; // exited/de-escalated
+    return '';
+  };
+
+  // Build table
+  let html = `<div style="font-weight:700;font-size:13px;margin-bottom:8px">Client Risk by Month</div>`;
+  html += `<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:11px;width:100%">`;
+  html += `<thead><tr><th style="text-align:left;padding:4px 8px;border-bottom:2px solid #ddd;min-width:160px">Client</th>`;
+  sortedMonths.forEach(m => {
+    html += `<th style="text-align:center;padding:4px 6px;border-bottom:2px solid #ddd;min-width:44px">${moLabel(m)}</th>`;
+  });
+  html += `</tr></thead><tbody>`;
+
+  clientNames.forEach(name => {
+    html += `<tr><td style="padding:3px 8px;border-bottom:1px solid #f0ede6;font-weight:500;white-space:nowrap">${esc(shortName(name))}</td>`;
+    let prev = null;
+    sortedMonths.forEach(m => {
+      const s = clients[name][m];
+      const arrow = cellIcon(s, prev);
+      const arrowColor = arrow.includes('9650') ? ';font-size:8px' : ';font-size:8px';
+      if (s) {
+        html += `<td style="text-align:center;padding:3px 2px;border-bottom:1px solid #f0ede6"><span style="display:inline-block;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:600;${cellStyle(s)}">${s === 'ads_risk' ? 'R' : s === 'flag' ? '!' : '&#10003;'}${arrow}</span></td>`;
+      } else {
+        html += `<td style="text-align:center;padding:3px 2px;border-bottom:1px solid #f0ede6"><span style="color:#ddd">—</span></td>`;
+      }
+      prev = s;
+    });
+    html += `</tr>`;
+  });
+
+  html += `</tbody></table></div>`;
+
+  // Legend
+  html += `<div style="display:flex;gap:12px;margin-top:8px;font-size:10px;color:#666;flex-wrap:wrap">
+    <span><span style="display:inline-block;width:18px;height:14px;border-radius:3px;background:#CC3333;vertical-align:middle;margin-right:3px"></span>At Risk</span>
+    <span><span style="display:inline-block;width:18px;height:14px;border-radius:3px;background:#f5d98a;vertical-align:middle;margin-right:3px"></span>Flag</span>
+    <span><span style="display:inline-block;width:18px;height:14px;border-radius:3px;background:#b6d7a8;vertical-align:middle;margin-right:3px"></span>Healthy</span>
+    <span>&#9650; Escalated &nbsp; &#9660; Improved</span>
+  </div>`;
+
+  el.innerHTML = html;
+}
+
+function renderTable() {
+  const filtered = getFilteredData();
+  const sorted = sortData(filtered);
+  var total = filtered.length;
+  var riskClients = filtered.filter(r => r.status === 'Risk');
+  var flagCount = filtered.filter(r => r.status === 'Flag').length;
+  var healthyCount = filtered.filter(r => r.status === 'Healthy').length;
+  var riskCount = riskClients.length;
+  var bothRisk = riskClients.filter(r => r.risk_type && r.risk_type.includes('Both')).length;
+  var adsRisk = riskClients.filter(r => r.risk_type && r.risk_type.includes('Ads') && !r.risk_type.includes('Both')).length;
+  var funnelRisk = riskClients.filter(r => r.risk_type && r.risk_type.includes('Funnel') && !r.risk_type.includes('Both')).length;
+  function pct(n) { return total > 0 ? Math.round(n / total * 100) + '%' : ''; }
+
+  document.getElementById('countTotal').textContent = total;
+  document.getElementById('countRisk').textContent = riskCount;
+  document.getElementById('labelRisk').innerHTML = 'At Risk (' + pct(riskCount) + ')' +
+    (riskCount > 0 ? '<br><span style="font-size:10px;opacity:0.8">' +
+      (bothRisk > 0 ? '<span style="color:#4a0000">' + bothRisk + ' Both</span>' : '') +
+      (bothRisk > 0 && adsRisk > 0 ? ' · ' : '') +
+      (adsRisk > 0 ? '<span style="color:#CC3333">' + adsRisk + ' Ads</span>' : '') +
+      ((bothRisk > 0 || adsRisk > 0) && funnelRisk > 0 ? ' · ' : '') +
+      (funnelRisk > 0 ? '<span style="color:#d4553a">' + funnelRisk + ' Funnel</span>' : '') +
+    '</span>' : '');
+  document.getElementById('countFlag').textContent = flagCount;
+  document.getElementById('labelFlag').textContent = 'Flagged (' + pct(flagCount) + ')';
+  document.getElementById('countHealthy').textContent = healthyCount;
+  document.getElementById('labelHealthy').textContent = 'Healthy (' + pct(healthyCount) + ')';
+
+  document.querySelectorAll('#dashTable thead th').forEach(th => {
+    th.classList.remove('sorted-asc', 'sorted-desc');
+    if (th.dataset.key === sortKey) th.classList.add(sortDir === 'asc' ? 'sorted-asc' : 'sorted-desc');
+  });
+
+  const tbody = document.getElementById('dashBody');
+  tbody.innerHTML = '';
+  if (!sorted.length) { tbody.innerHTML = '<tr><td colspan="20" class="loading">No clients match filters</td></tr>'; return; }
+
+  sorted.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.className = 'data-row';
+    tr.innerHTML = buildRow(r);
+    // Per-cell click: detect column and open appropriate drill-down
+    tr.querySelectorAll('td').forEach((td, colIdx) => {
+      td.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Budget cell: inline edit instead of drill-down
+        if (td.classList.contains('editable-budget')) {
+          startBudgetEdit(td, r);
+          return;
+        }
+        const drillType = COL_DRILLS[colIdx] || 'summary';
+        // Highlight the clicked column
+        document.querySelectorAll('.col-highlight').forEach(el => el.classList.remove('col-highlight'));
+        document.querySelectorAll(`#dashTable thead th:nth-child(${colIdx+1})`).forEach(el => el.classList.add('col-highlight'));
+        td.classList.add('col-highlight');
+        toggleDetail(r, tr, drillType);
+      });
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+// ── Cell color helpers ──
+function tierCellClass(r) {
+  if (r.risk_type === 'Both Risk') return 'tier-both-risk';
+  if (r.risk_type === 'Ads Risk') return 'tier-ads-risk';
+  if (r.risk_type === 'Funnel Risk') return 'tier-funnel-risk';
+  if (r.status === 'Flag') return 'tier-flag';
+  return 'tier-healthy';
+}
+function leadBg(r) {
+  const m=r.months_in_program,c=r.quality_leads,k=r.budget,g=r.roas,h=r.guarantee;
+  if(m>=3&&m<=5&&c<=10) return 'bg-red';
+  if(m>=6&&((c<20&&k>=3000)||(c<30&&g<0.9&&h<=2))) return 'bg-red';
+  if(m===1&&c===0) return 'bg-yellow';
+  if(m===2&&c<=10) return 'bg-yellow';
+  if(m>=3&&m<=5&&c>=11&&c<=19) return 'bg-yellow';
+  if(m>=6&&c>=20&&c<30&&(g>=0.9||h>2)) return 'bg-yellow';
+  if(m>=6&&c<20&&k<3000) return 'bg-yellow';
+  return '';
+}
+function cplBg(r) {
+  if(r.months_in_program>=3&&r.cpl>170) return 'bg-red';
+  if(r.months_in_program===2&&r.cpl>400) return 'bg-red';
+  if(r.months_in_program>=3&&r.cpl>140) return 'bg-yellow';
+  if(r.months_in_program>=3&&r.cpl>0&&r.cpl<40) return 'bg-light-yellow';
+  return '';
+}
+function volBg(r) {
+  if(!r.lead_volume_change) return '';
+  if(r.lead_volume_change<-0.3) return 'bg-red';
+  if(r.lead_volume_change<-0.1) return 'bg-yellow';
+  return '';
+}
+function bookBg(r) {
+  const p=r.inspection_type||'free',f=r.insp_booked_pct,h=r.guarantee;
+  if(r.months_in_program>=3){
+    if(p==='free'&&f<0.15&&h<=3) return 'bg-red';
+    if(p==='paid'&&f<=0.1&&h<=3) return 'bg-red';
+    // Guarantee saves from risk but still yellow
+    if(p==='free'&&f<0.15&&h>3) return 'bg-yellow';
+    if(p==='paid'&&f<=0.1&&h>3) return 'bg-yellow';
+    if(p==='free'&&f>=0.15&&f<0.28) return 'bg-yellow';
+    if(p==='paid'&&f>=0.11&&f<=0.19) return 'bg-yellow';
+  }
+  if(r.months_in_program===2&&f<0.2) return 'bg-yellow';
+  return '';
+}
+function roas3moBg(r) {
+  if (r.months_in_program < 5) return '';
+  const v = r.trailing_3mo_roas;
+  let greenThresh, yellowThresh, redThresh;
+  if (r.months_in_program <= 6) { greenThresh = 2; yellowThresh = 1; redThresh = 1; }
+  else if (r.months_in_program <= 9) { greenThresh = 2.5; yellowThresh = 1; redThresh = 1; }
+  else { greenThresh = 3; yellowThresh = 1.5; redThresh = 1.5; }
+
+  if (v >= greenThresh) return 'bg-light-green';
+  if (v < redThresh) return 'bg-red';
+  if (v < yellowThresh + (greenThresh - yellowThresh) / 2) return 'bg-yellow';
+  return '';
+}
+function fmt3moRoas(r) {
+  if (r.months_in_program < 3) return '<span style="color:#999">-</span>';
+  const v3 = r.trailing_3mo_roas;
+  const v6 = r.trailing_6mo_roas;
+  const pot = r.trailing_3mo_potential_roas;
+  const fmtV = (v) => v >= 10 ? v.toFixed(0) + 'x' : v.toFixed(1) + 'x';
+
+  // Arrow: 3-month vs 6-month trend direction
+  let arrow = '';
+  if (v3 > 0 && v6 > 0) {
+    const diff = v3 - v6;
+    if (diff > 0.3) arrow = '<span style="color:#38761D;font-size:9px;margin-left:2px">&#9650;</span>';
+    else if (diff < -0.3) arrow = '<span style="color:#CC3333;font-size:9px;margin-left:2px">&#9660;</span>';
+  }
+
+  let html = '<span style="font-weight:600">' + fmtV(v3) + '</span>' + arrow;
+
+  // Potential bar: show when meaningfully higher than closed
+  if (pot > v3 + 1 && pot >= 2) {
+    const barWidth = Math.min(Math.round((pot / Math.max(pot, 8)) * 40), 40);
+    html += '<div style="margin-top:2px;display:flex;align-items:center;gap:3px">'
+      + '<div style="height:3px;width:' + barWidth + 'px;background:linear-gradient(90deg,#b6d7a8,#38761D);border-radius:2px;opacity:0.7"></div>'
+      + '<span style="font-size:8px;color:#38761D;font-weight:600">' + fmtV(pot) + '</span>'
+      + '</div>';
+  }
+
+  return html;
+}
+function roasBg(r) {
+  if(r.months_in_program<3) return '';
+  if(r.roas<0.6) return 'bg-red';
+  if(r.roas<1.0) return 'bg-yellow';
+  if(r.roas>=1.0) return 'bg-light-green';
+  return '';
+}
+function guarBg(r) {
+  if(r.months_in_program<3) return '';
+  // Red: behind pace and running out of time
+  if(r.months_in_program>=10&&r.guarantee<0.8) return 'bg-red';
+  if(r.months_in_program>=7&&r.guarantee<0.5) return 'bg-red';
+  // Yellow: watchable
+  if(r.months_in_program>=10&&r.guarantee<1.0) return 'bg-yellow';
+  if(r.months_in_program>=7&&r.guarantee<0.75) return 'bg-yellow';
+  if(r.months_in_program>=5&&r.guarantee<0.5) return 'bg-yellow';
+  // Green: met or exceeded
+  if(r.guarantee>=1.0) return 'bg-light-green';
+  return '';
+}
+function calBg(r) {
+  // Red if zero inspections of ANY kind on calendar
+  if(r.months_in_program>=3&&r.on_cal_total===0) return 'bg-red';
+  // Yellow if GA inspections are 0 but total has some
+  if(r.months_in_program>=3&&r.on_cal_14d===0&&r.on_cal_total>0) return 'bg-yellow';
+  return '';
+}
+function spamBg(r){return r.spam_rate>0.11?'bg-yellow':'';}
+function abandBg(r){return r.abandoned_rate>0.11?'bg-yellow':'';}
+function spendBg(r) {
+  if(!r.budget) return '';
+  const ratio=r.ad_spend/r.budget;
+  if(r.ad_spend===0&&r.budget>0) return 'bg-red';
+  if(ratio>1.24||ratio<0.5) return 'bg-red';
+  if(ratio>1.1) return 'bg-yellow';
+  return '';
+}
+function daysBg(r) {
+  if(!r.days_since_lead) return '';
+  if(r.months_in_program>=3&&r.days_since_lead>=7) return 'bg-red';
+  if(r.months_in_program>=3&&r.days_since_lead>=4) return 'bg-yellow';
+  if(r.months_in_program===2&&r.days_since_lead>=14) return 'bg-yellow';
+  return '';
+}
+function ansBg(r) {
+  if(!r.call_answer_rate) return '';
+  if(r.call_answer_rate<0.6) return 'bg-red';
+  if(r.call_answer_rate<0.8) return 'bg-yellow';
+  return 'bg-light-green';
+}
+function statusBg(r) {
+  if(r.risk_type==='Both Risk') return 'background:#4a0000;color:#fff';
+  if(r.risk_type==='Ads Risk') return 'background:#CC3333;color:#fff';
+  if(r.risk_type==='Funnel Risk') return 'background:#d4553a;color:#fff';
+  if(r.status==='Flag') return 'background:#FFD966;color:#1a1a1a';
+  return 'background:#93C47D;color:#1a1a1a';
+}
+function statusLabel(r){return r.risk_type||r.status;}
+
+// Check if ALL triggered metrics are improving over the last 14 days
+// Returns { recovering: bool, checked: int, improving: int, details: [] }
+function checkTriggerRecovery(r) {
+  // Risk clients: only check risk triggers. Flag clients: only check flag triggers.
+  const triggers = r.status === 'Risk' ? (r.risk_triggers || []) : (r.flag_triggers || []);
+  const details = [];
+  const has = (pat) => triggers.some(t => pat.test(t));
+
+  // CPL triggers (lower is better)
+  if (has(/CPL/i)) {
+    const ok = r.r14d_cpl_recent != null && r.r14d_cpl_prior != null && r.r14d_cpl_prior > 0 && r.r14d_cpl_recent <= r.r14d_cpl_prior;
+    const hasData = r.r14d_cpl_recent != null && r.r14d_cpl_prior != null && r.r14d_cpl_prior > 0;
+    details.push({ name: 'CPL', improving: ok, invertArrow: true,
+      trending: hasData ? (r.r14d_cpl_recent < r.r14d_cpl_prior ? 'down' : 'up') : null,
+      detail: hasData ? '$' + Math.round(r.r14d_cpl_recent) + ' vs $' + Math.round(r.r14d_cpl_prior) + ' prior 14d' : 'no 14d data' });
+  }
+
+  // Lead volume / lead count triggers
+  if (has(/lead volume|leads \(|leads </i)) {
+    const ok = r.r14d_vol_change != null && r.r14d_vol_change > 0;
+    const pct = r.r14d_vol_change != null ? Math.round(r.r14d_vol_change * 100) : null;
+    details.push({ name: 'Volume', improving: ok, invertArrow: false,
+      trending: pct != null ? (pct > 0 ? 'up' : 'down') : null,
+      detail: pct != null ? (pct >= 0 ? '+' : '') + pct + '% (14d)' : 'no 14d data' });
+  }
+
+  // Book rate triggers
+  if (has(/book rate/i)) {
+    const ok = r.trend && r.trend.book_delta != null && r.trend.book_delta >= 0;
+    const hasData = r.trend && r.trend.book_delta != null;
+    details.push({ name: 'Booking', improving: ok, invertArrow: false,
+      trending: hasData ? (r.trend.book_delta >= 0 ? 'up' : 'down') : null,
+      detail: hasData ? (r.trend.book_delta >= 0 ? '+' : '') + (r.trend.book_delta * 100).toFixed(0) + '%' : 'no trend data' });
+  }
+
+  // ROAS triggers
+  if (has(/ROAS/i)) {
+    const ok = r.trend && r.trend.roas_delta != null && r.trend.roas_delta >= 0;
+    const hasData = r.trend && r.trend.roas_delta != null;
+    details.push({ name: 'ROAS', improving: ok, invertArrow: false,
+      trending: hasData ? (r.trend.roas_delta >= 0 ? 'up' : 'down') : null,
+      detail: hasData ? (r.trend.roas_delta >= 0 ? '+' : '') + r.trend.roas_delta.toFixed(2) + 'x' : 'no trend data' });
+  }
+
+  // Calendar triggers
+  if (has(/calendar/i)) {
+    const ok = Number(r.on_cal_14d) > 0;
+    details.push({ name: 'Calendar', improving: ok, invertArrow: false,
+      trending: ok ? 'up' : 'down',
+      detail: r.on_cal_14d + ' GA inspections' });
+  }
+
+  // Days since lead triggers (lower is better)
+  if (has(/days since/i)) {
+    const ok = Number(r.days_since_lead) <= 3;
+    details.push({ name: 'Recency', improving: ok, invertArrow: true,
+      trending: ok ? 'down' : 'up',
+      detail: r.days_since_lead + ' days since last lead' });
+  }
+
+  // Spend triggers (over/underspend)
+  if (has(/overspend|underspend|\$0 spend/i)) {
+    const spendPct = r.budget > 0 ? r.ad_spend / r.budget : 1;
+    const ok = spendPct >= 0.5 && spendPct <= 1.24;
+    details.push({ name: 'Spend', improving: ok, invertArrow: false,
+      trending: ok ? 'up' : 'down',
+      detail: Math.round(spendPct * 100) + '% of budget' });
+  }
+
+  // Spam/Abandoned: skip — already accounted for in quality lead count and CPL
+
+  // Guarantee triggers
+  if (has(/guarantee/i)) {
+    const ok = r.trend && r.trend.roas_delta != null && r.trend.roas_delta >= 0;
+    const hasData = r.trend && r.trend.roas_delta != null;
+    details.push({ name: 'Guarantee', improving: ok, invertArrow: false,
+      trending: hasData ? (r.trend.roas_delta >= 0 ? 'up' : 'down') : null,
+      detail: r.guarantee.toFixed(2) + 'x' });
+  }
+
+  const checked = details.length;
+  const improving = details.filter(d => d.improving).length;
+  return { recovering: checked > 0 && improving === checked, checked, improving, details };
+}
+
+function recoveryArrow(r) {
+  if (r.status === 'Healthy') {
+    // Healthy: general direction based on 14d signals
+    let good = 0, bad = 0;
+    if (r.r14d_vol_change != null) { r.r14d_vol_change >= 0 ? good++ : bad++; }
+    if (r.r14d_cpl_recent != null && r.r14d_cpl_prior != null && r.r14d_cpl_prior > 0) { r.r14d_cpl_recent <= r.r14d_cpl_prior ? good++ : bad++; }
+    if (r.trend && r.trend.roas_delta != null) { r.trend.roas_delta >= 0 ? good++ : bad++; }
+    if (r.trend && r.trend.book_delta != null && r.trend.book_delta !== 0) { r.trend.book_delta >= 0 ? good++ : bad++; }
+    if (good + bad === 0) return '';
+    const up = good >= bad;
+    return ' <span style="font-size:10px;color:' + (up ? '#38761D' : '#b8860b') + '" title="' + (up ? good + '/' + (good+bad) + ' signals positive' : bad + '/' + (good+bad) + ' signals trending down') + '">' + (up ? '&#9650;' : '&#9660;') + '</span>';
+  }
+  const { recovering } = checkTriggerRecovery(r);
+  const onDarkBg = r.risk_type && (r.risk_type.includes('Risk'));
+  const upColor = '#38761D';
+  const downColor = onDarkBg ? 'rgba(255,255,255,0.85)' : '#CC3333';
+  return ' <span style="font-size:10px;color:' + (recovering ? upColor : downColor) + '" title="' + (recovering ? 'Recovering' : 'Not yet recovering') + '">' + (recovering ? '&#9650;' : '&#9660;') + '</span>';
+}
+
+function daysInStatusBadge(r) {
+  if (!r.days_in_status || r.status === 'Healthy') return '';
+  const days = r.days_in_status;
+  if (days < 3) return '';
+  const color = r.status === 'Risk' ? '#CC3333' : '#b8860b';
+  const bg = r.status === 'Risk' ? '#F4CCCC' : '#FFF2CC';
+  const isFloor = r.days_at_floor;
+  const suffix = isFloor ? '+' : '';
+  const since = r.status_since ? new Date(r.status_since + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+  const title = (isFloor
+    ? 'In ' + r.status + ' for at least ' + days + ' days (goes back to start of tracking)'
+    : 'In ' + r.status + ' for ' + days + ' consecutive days') + (since ? ' — since ' + since : '');
+  return ' <span style="display:inline-block;padding:1px 5px;border-radius:10px;font-size:9px;font-weight:600;background:' + bg + ';color:' + color + ';vertical-align:middle" title="' + title + '">' + days + 'd' + suffix + '</span>';
+}
+
+function cplSpikeBadge(r) {
+  if (r.prior_cpl <= 0 || r.cpl <= 0) return '';
+  // Only show when CPL is in healthy range (<$140) — above that, the cell coloring already flags it
+  if (r.cpl >= 140) return '';
+  const pct = (r.cpl - r.prior_cpl) / r.prior_cpl;
+  if (pct <= 0.3 || r.cpl < 80) return '';
+  const changePct = Math.round(pct * 100);
+  return ' <span style="display:inline-block;padding:1px 6px;border-radius:10px;font-size:9px;font-weight:700;background:#FDE8E4;color:#B91C1C;border:1px solid #FECACA;vertical-align:middle;cursor:help" title="CPL $' + Math.round(r.prior_cpl) + ' → $' + Math.round(r.cpl) + ' (+' + changePct + '%)">CPL +' + changePct + '%</span>';
+}
+
+function volumeAlertBadge(r) {
+  if (!r.lead_volume_change || r.lead_volume_change >= -0.3) return '';
+  const dropPct = Math.abs(Math.round(r.lead_volume_change * 100));
+  return ' <span style="display:inline-block;padding:1px 6px;border-radius:10px;font-size:9px;font-weight:700;background:#FDE8E4;color:#B91C1C;border:1px solid #FECACA;vertical-align:middle;cursor:help" title="Lead volume dropped ' + dropPct + '% vs prior 30 days">Volume</span>';
+}
+
+function _cplDriftInfo(r) {
+  if (!r.baseline_cpl || r.baseline_cpl <= 0) return null;
+  const cpl30 = r.cpl > 0 ? r.cpl : 0;
+  const cplMtd = r.mtd_projected_cpl > 0 ? r.mtd_projected_cpl : 0;
+  const worstCpl = Math.max(cpl30, cplMtd);
+  if (worstCpl <= 0) return null;
+  const drift = (worstCpl - r.baseline_cpl) / r.baseline_cpl;
+  if (drift < 0.4) return null;
+  return { pct: Math.round(drift * 100), worst: Math.round(worstCpl), baseline: Math.round(r.baseline_cpl), isMtd: cplMtd > cpl30 };
+}
+
+function _volDriftInfo(r) {
+  if (!r.baseline_leads || r.baseline_leads <= 0) return null;
+  const leads30 = r.quality_leads > 0 ? r.quality_leads : 0;
+  const leadsMtd = r.mtd_projected_leads > 0 ? r.mtd_projected_leads : 0;
+  const worstLeads = Math.min(leads30, leadsMtd > 0 ? leadsMtd : leads30);
+  if (worstLeads <= 0) return null;
+  const drift = (worstLeads - r.baseline_leads) / r.baseline_leads;
+  if (drift > -0.35) return null;
+  return { pct: Math.abs(Math.round(drift * 100)), worst: Math.round(worstLeads), baseline: Math.round(r.baseline_leads), isMtd: leadsMtd > 0 && leadsMtd < leads30 };
+}
+
+function driftBadge(r) {
+  const cd = _cplDriftInfo(r);
+  const vd = _volDriftInfo(r);
+  if (!cd && !vd) return '';
+  // Build combined label
+  let parts = [];
+  let tipParts = [];
+  if (cd) {
+    parts.push('CPL +' + cd.pct + '%');
+    tipParts.push((cd.isMtd ? 'MTD' : '30d') + ' CPL $' + cd.worst + ' vs $' + cd.baseline + ' baseline');
+  }
+  if (vd) {
+    parts.push('Vol \u2193' + vd.pct + '%');
+    tipParts.push((vd.isMtd ? 'MTD pace' : '30d') + ' ' + vd.worst + ' leads vs ' + vd.baseline + '/mo baseline');
+  }
+  const label = parts.join(' · ');
+  const tip = 'Drift from best 3-month baseline: ' + tipParts.join('; ');
+  return ' <span style="display:inline-block;padding:1px 6px;border-radius:10px;font-size:9px;font-weight:600;background:transparent;color:#92400E;border:1.5px solid #D97706;vertical-align:middle;cursor:help" title="' + tip + '">' + label + '</span>';
+}
+
+function hasDriftBadge(r) {
+  return _cplDriftInfo(r) !== null || _volDriftInfo(r) !== null;
+}
+
+function buildRow(r) {
+  const vol=r.lead_volume_change?(r.lead_volume_change*100).toFixed(0)+'%':'0%';
+  const book=(r.insp_booked_pct*100).toFixed(0)+'%';
+  const roasStr=r.roas>=10?r.roas.toFixed(0)+'x':r.roas.toFixed(2)+'x';
+  const guarStr=r.guarantee>=10?r.guarantee.toFixed(0)+'x':r.guarantee.toFixed(2)+'x';
+  const noInvPct = r.all_time_rev > 0 ? r.approved_no_inv / r.all_time_rev : 0;
+  const guarWarn = noInvPct > 0.3 ? ' <span title="$'+fmtNum(r.approved_no_inv)+' from approved estimates with no invoice" style="color:#E85D4D;font-size:10px;cursor:help">*</span>' : '';
+  const ansStr=r.call_answer_rate?(r.call_answer_rate*100).toFixed(0)+'%':'-';
+  const daysStr=r.days_since_lead||'-';
+  return `
+    <td class="${tierCellClass(r)}" style="text-align:left;line-height:1.3;padding:5px 8px"><div style="display:flex;align-items:center;gap:4px"><span>${(() => {
+      let parts = r.client_name.split(' | ');
+      if (parts.length === 1) parts = r.client_name.split(' - ');
+      if (parts.length > 1) {
+        const biz = parts[parts.length - 1].trim();
+        const owner = parts.slice(0, -1).join(' - ').trim();
+        return '<span style="font-weight:700;font-size:12px">' + esc(biz) + '</span><br><span style="font-size:9px;opacity:0.6;letter-spacing:0.3px">' + esc(owner) + '</span>';
+      }
+      return '<span style="font-weight:700;font-size:12px">' + esc(r.client_name) + '</span>';
+    })()}${recoveryArrow(r)}</span><span style="margin-left:auto;white-space:nowrap">${driftBadge(r)}${volumeAlertBadge(r)}${cplSpikeBadge(r)}${daysInStatusBadge(r)}</span></div></td>
+    <td style="font-size:11px;color:#666">${esc(r.ads_manager||'')}</td>
+    <td class="col-group-start">${r.quality_leads}</td>
+    <td class="${leadBg(r)}">${r.quality_count}</td>
+    <td class="${cplBg(r)}">$${Math.round(r.cpl)}</td>
+    <td class="${volBg(r)}" title="${r.quality_leads} contacts vs ${r.prior_quality_leads} prior 30 days">${r.rolling_30d !== null ? (r.rolling_30d >= 0 ? '+' : '') + r.rolling_30d + '%' : '-'}</td>
+    <td class="${bookBg(r)} col-group-start">${book}</td>
+    <td class="${roasBg(r)}" style="line-height:1.2">${(() => {
+      const fmtV = (v) => v >= 10 ? v.toFixed(0) + 'x' : v.toFixed(1) + 'x';
+      let html = '<span style="font-weight:600">' + roasStr + '</span>';
+      const potRoas = r.period_potential_roas || (r.ad_spend > 0 ? (r.total_closed_rev + r.total_open_est_rev) / r.ad_spend : 0);
+      if (potRoas > r.roas + 1 && potRoas >= 2) {
+        const barWidth = Math.min(Math.round((potRoas / Math.max(potRoas, 8)) * 40), 40);
+        html += '<div style="margin-top:2px;display:flex;align-items:center;gap:3px">'
+          + '<div style="height:3px;width:' + barWidth + 'px;background:linear-gradient(90deg,#b6d7a8,#38761D);border-radius:2px;opacity:0.7"></div>'
+          + '<span style="font-size:8px;color:#38761D;font-weight:600">' + fmtV(potRoas) + '</span>'
+          + '</div>';
+      }
+      return html;
+    })()}</td>
+    <td class="${roas3moBg(r)}" style="line-height:1.2">${fmt3moRoas(r)}</td>
+    <td class="${calBg(r)}">${r.on_cal_14d}/${r.on_cal_total}</td>
+    <td class="${daysBg(r)}">${daysStr}d</td>
+    <td class="${guarBg(r)}">${guarStr}${guarWarn}</td>
+    <td class="${ansBg(r)} col-group-start">${ansStr}</td>
+    <td class="${spamBg(r)}">${(r.spam_rate*100).toFixed(0)}%</td>
+    <td class="${abandBg(r)}">${(r.abandoned_rate*100).toFixed(0)}%</td>
+    <td class="col-group-start ${IS_MANAGER ? '' : 'editable-budget'}" data-customer-id="${r.customer_id}" data-budget="${r.budget}" ${IS_MANAGER ? '' : 'title="Click to edit"'}>${fmtK(r.budget)}</td>
+    <td class="${spendBg(r)}">${fmtK(r.ad_spend)}</td>
+    <td style="font-size:10px;color:#888">${r.lsa_spend>0 ? fmtK(r.lsa_spend)+'/'+r.lsa_leads : '-'}</td>
+    <td>${fmtK(r.total_closed_rev)}</td>
+    <td style="font-size:11px;color:#888">${r.months_in_program}</td>
+    <td class="status-cell" style="${statusBg(r)}">${statusLabel(r)}${r.flag_count>0&&r.status!=='Risk'?' ('+r.flag_count+')':''}${(() => {
+      if (!r.trend) return '';
+      const t = r.trend;
+      const goods = [(r.monthly_pace !== null && r.monthly_pace >= 0), (t.cpl_delta !== null && t.cpl_delta <= 0), (t.roas_delta !== null && t.roas_delta >= 0), (t.book_delta !== null && t.book_delta >= 0), (t.flag_delta !== null && t.flag_delta <= 0)].filter(x => x !== false);
+      const goodCount = goods.filter(x => x === true).length;
+      const totalCount = goods.length;
+      if (totalCount === 0) return '';
+      if (goodCount > totalCount / 2) return trendArrow('improving', goodCount + '/' + totalCount + ' metrics improving');
+      if (goodCount < totalCount / 2) return trendArrow('declining', (totalCount - goodCount) + '/' + totalCount + ' metrics declining');
+      return '';
+    })()}</td>`;
+}
+
+// ── Detail Drawer ─────────────────────────────────────────────
+async function toggleDetail(r, tr, drillType) {
+  const existing = document.querySelector('tr.detail-row');
+  if (existing) {
+    const same = existing.dataset.customerId === String(r.customer_id) && existing.dataset.drill === drillType;
+    existing.remove();
+    if (same) return;
+  }
+
+  const detailTr = document.createElement('tr');
+  detailTr.className = 'detail-row';
+  detailTr.dataset.customerId = r.customer_id;
+  detailTr.dataset.drill = drillType;
+
+  const start = document.getElementById('filterStart').value;
+  const end = document.getElementById('filterEnd').value;
+
+  // Lead volume key (shown when drilling into leads)
+  const volPct = r.lead_volume_change !== null ? (r.lead_volume_change >= 0 ? '+' : '') + (r.lead_volume_change * 100).toFixed(0) + '%' : 'N/A';
+  const roll30 = r.rolling_30d !== null ? (r.rolling_30d >= 0 ? '+' : '') + r.rolling_30d + '%' : 'N/A';
+  const mixed = r.rolling_30d !== null && r.lead_volume_change !== null && ((r.lead_volume_change >= 0) !== (r.rolling_30d >= 0));
+  const volKeyHtml = drillType === 'leads' ? `
+    <div style="background:#f5f3ee;padding:10px 12px;border-radius:6px;margin-bottom:12px;font-size:12px;text-align:left;line-height:1.8">
+      <div style="font-weight:700;margin-bottom:4px">Lead Volume</div>
+      <div><span style="font-weight:600;font-size:14px;${r.lead_volume_change >= 0 ? 'color:#38761D' : r.lead_volume_change < -0.3 ? 'color:#CC3333' : 'color:#b8860b'}">${volPct}</span> <span style="color:#999">Monthly Pace</span> — pro-rated this month vs last full month</div>
+      <div><span style="font-weight:600;font-size:14px;${r.rolling_30d >= 0 ? 'color:#38761D' : r.rolling_30d < -30 ? 'color:#CC3333' : 'color:#b8860b'}">${roll30}</span> <span style="color:#999">30-Day Rolling</span> — ${r.quality_leads} contacts vs ${r.prior_quality_leads} prior</div>
+      ${mixed ? '<div style="color:#E85D4D;font-weight:600;margin-top:4px">&#9888; Mixed signal — monthly pace and 30-day rolling disagree</div>' : ''}
+    </div>` : '';
+
+  // Campaign trajectory (shown on all drill-downs)
+  let trajectoryHtml = '';
+  {
+    // 7-day momentum: compare recent 7d trend to 14d trend
+    function getMomentum(r) {
+      const m = [];
+      // Volume: 7d vs 14d
+      if (r.r7d_vol_change != null && r.r14d_vol_change != null) {
+        const v7 = r.r7d_vol_change >= 0;
+        const pct7 = Math.round(r.r7d_vol_change * 100);
+        const good = v7;
+        const trending = v7 ? 'up' : 'down';
+        m.push({ metric: 'Volume', good, trending, detail: (pct7 >= 0 ? '+' : '') + pct7 + '% (7d)' });
+      }
+      // CPL: 7d vs 14d (inverted — lower is better)
+      if (r.r7d_cpl != null && r.r7d_cpl_prior != null && r.r7d_cpl_prior > 0) {
+        const good = r.r7d_cpl <= r.r7d_cpl_prior;
+        const trending = r.r7d_cpl < r.r7d_cpl_prior ? 'down' : 'up';
+        m.push({ metric: 'CPL', good, trending, detail: '$' + Math.round(r.r7d_cpl) + ' vs $' + Math.round(r.r7d_cpl_prior) + ' prior 7d' });
+      }
+      return m;
+    }
+
+    const signalDot = (d) => {
+      const color = d.improving ? '#274E13' : '#990000';
+      const arrow = d.trending === 'up' ? '&#9650;' : d.trending === 'down' ? '&#9660;' : '&#8211;';
+      return '<span style="color:' + color + '">' + arrow + ' ' + d.name + ' ' + d.detail + '</span>';
+    };
+
+    const isRiskOrFlag = r.status === 'Risk' || r.status === 'Flag';
+
+    if (isRiskOrFlag) {
+      // Risk/Flag: check triggered metrics specifically
+      const rec = checkTriggerRecovery(r);
+
+      let verdict, bg;
+      if (r.months_in_program <= 3) {
+        verdict = 'Early Stage'; bg = '#FFF2CC';
+      } else if (rec.recovering) {
+        verdict = 'Recovering'; bg = '#D9EAD3';
+      } else if (rec.improving > 0) {
+        verdict = 'Mixed — ' + rec.improving + '/' + rec.checked + ' improving'; bg = '#FFF2CC';
+      } else if (Number(r.days_since_lead) >= 7) {
+        verdict = 'Stalled'; bg = '#F4CCCC';
+      } else {
+        verdict = 'Needs Attention'; bg = '#F4CCCC';
+      }
+
+      const insights = [];
+      if (r.months_in_program <= 3) {
+        insights.push('Early-stage account — too soon to evaluate recovery trajectory.');
+      } else {
+        const notImproving = rec.details.filter(d => !d.improving);
+        const improving = rec.details.filter(d => d.improving);
+        if (rec.recovering) {
+          insights.push('All ' + rec.checked + ' triggered metrics improving — on track to return to healthy.');
+        } else if (notImproving.length > 0) {
+          insights.push('Still needs improvement: ' + notImproving.map(d => d.name).join(', ') + '.');
+          if (improving.length > 0) {
+            insights.push('Bright spots: ' + improving.map(d => d.name + ' (' + d.detail + ')').join(', ') + '.');
+          }
+        }
+        // 7-day momentum qualifier — always show
+        const momentum = getMomentum(r);
+        if (momentum.length > 0) {
+          insights.push('7-day snapshot: ' + momentum.map(m => { const c = m.good ? '#274E13' : '#990000'; const a = m.trending === 'up' ? '&#9650;' : '&#9660;'; return '<span style="color:' + c + '">' + a + ' ' + m.metric + ' ' + m.detail + '</span>'; }).join(' &middot; ') + '.');
+        }
+      }
+
+      trajectoryHtml = `<div style="background:${bg};padding:10px 12px;border-radius:6px;margin-bottom:10px;font-size:11px;text-align:left;line-height:1.7;box-sizing:border-box">
+        <div style="font-weight:700;font-size:12px;margin-bottom:4px">${verdict} — ${rec.improving}/${rec.checked} triggered metrics improving</div>
+        ${rec.details.length ? '<div style="margin-bottom:3px;flex-wrap:wrap">' + rec.details.map(signalDot).join(' &middot; ') + '</div>' : ''}
+        ${insights.length ? '<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(0,0,0,0.1);color:#333;font-style:italic;word-wrap:break-word;overflow-wrap:break-word">' + insights.map(i => '<p style="margin:0 0 4px 0">' + i + '</p>').join('') + '</div>' : ''}
+      </div>`;
+
+    } else {
+      // Healthy: show general direction signals
+      const signals = [];
+      if (r.r14d_vol_change != null) {
+        const pct = Math.round(r.r14d_vol_change * 100);
+        signals.push({ name: 'Volume', improving: pct >= 0, invertArrow: false, trending: pct >= 0 ? 'up' : 'down',
+          detail: (pct >= 0 ? '+' : '') + pct + '% (14d)' });
+      }
+      if (r.r14d_cpl_recent != null && r.r14d_cpl_prior != null && r.r14d_cpl_prior > 0) {
+        const down = r.r14d_cpl_recent <= r.r14d_cpl_prior;
+        signals.push({ name: 'CPL', improving: down, invertArrow: true, trending: down ? 'down' : 'up',
+          detail: '$' + Math.round(r.r14d_cpl_recent) + ' vs $' + Math.round(r.r14d_cpl_prior) + ' prior 14d' });
+      }
+      if (r.trend && r.trend.roas_delta != null) {
+        signals.push({ name: 'ROAS', improving: r.trend.roas_delta >= 0, invertArrow: false, trending: r.trend.roas_delta >= 0 ? 'up' : 'down',
+          detail: (r.trend.roas_delta >= 0 ? '+' : '') + r.trend.roas_delta.toFixed(2) + 'x' });
+      }
+      if (r.trend && r.trend.book_delta != null && r.trend.book_delta !== 0) {
+        signals.push({ name: 'Booking', improving: r.trend.book_delta >= 0, invertArrow: false, trending: r.trend.book_delta >= 0 ? 'up' : 'down',
+          detail: (r.trend.book_delta >= 0 ? '+' : '') + (r.trend.book_delta * 100).toFixed(0) + '%' });
+      }
+      if (r.on_cal_14d !== undefined) {
+        signals.push({ name: 'Calendar', improving: Number(r.on_cal_14d) > 0, invertArrow: false, trending: Number(r.on_cal_14d) > 0 ? 'up' : 'down',
+          detail: r.on_cal_14d + ' GA inspections' });
+      }
+
+      const goodCount = signals.filter(s => s.improving).length;
+      const total = signals.length;
+      let verdict, bg;
+      if (total === 0) { verdict = 'On Track'; bg = '#D9EAD3'; }
+      else if (goodCount === total) { verdict = 'On Track'; bg = '#D9EAD3'; }
+      else if (goodCount > total / 2) { verdict = 'On Track'; bg = '#D9EAD3'; }
+      else if (goodCount === 0) { verdict = 'Watch — all signals trending down'; bg = '#FFF2CC'; }
+      else { verdict = 'Mixed — ' + goodCount + '/' + total + ' signals positive'; bg = '#FFF2CC'; }
+
+      // 7-day momentum for healthy clients — always show
+      const momentum = getMomentum(r);
+      const healthyInsights = [];
+      if (momentum.length > 0) {
+        healthyInsights.push('7-day snapshot: ' + momentum.map(m => { const c = m.good ? '#274E13' : '#990000'; const a = m.trending === 'up' ? '&#9650;' : '&#9660;'; return '<span style="color:' + c + '">' + a + ' ' + m.metric + ' ' + m.detail + '</span>'; }).join(' &middot; ') + '.');
+      }
+
+      const flags = r.flag_triggers || [];
+      if (signals.length > 0 || flags.length > 0) {
+        trajectoryHtml = `<div style="background:${bg};padding:10px 12px;border-radius:6px;margin-bottom:10px;font-size:11px;text-align:left;line-height:1.7;box-sizing:border-box">
+          <div style="font-weight:700;font-size:12px;margin-bottom:4px">${verdict}</div>
+          ${signals.length ? '<div style="margin-bottom:3px;flex-wrap:wrap">' + signals.map(signalDot).join(' &middot; ') + '</div>' : ''}
+          ${healthyInsights.length ? '<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(0,0,0,0.1);color:#333;font-style:italic;word-wrap:break-word;overflow-wrap:break-word">' + healthyInsights.map(i => '<p style="margin:0 0 4px 0">' + i + '</p>').join('') + '</div>' : ''}
+          ${flags.length ? '<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(0,0,0,0.1);color:#b8860b;font-size:11px"><span style="font-weight:600">Flags (' + flags.length + '):</span> ' + flags.join(' &middot; ') + '</div>' : ''}
+        </div>`;
+      }
+    }
+  }
+
+
+
+  // Drift justification (baseline comparison)
+  let driftHtml = '';
+  {
+    const cd = _cplDriftInfo(r);
+    const vd = _volDriftInfo(r);
+    if (cd || vd) {
+      let rows = '';
+      if (cd) {
+        const barW = Math.min(cd.pct, 200); // cap bar width
+        rows += `<div style="margin-bottom:8px">
+          <div style="font-weight:600;margin-bottom:3px">CPL: $${cd.worst} <span style="color:#92400E">vs $${cd.baseline} baseline</span> <span style="color:#B91C1C;font-weight:700">(+${cd.pct}%)</span></div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <div style="flex:1;height:6px;background:#f0ede6;border-radius:3px;overflow:hidden">
+              <div style="height:100%;border-radius:3px;background:linear-gradient(90deg, #D97706 0%, #B91C1C 100%);width:${Math.min(barW/2, 100)}%"></div>
+            </div>
+            <span style="font-size:10px;color:#999;white-space:nowrap">${cd.isMtd ? 'MTD' : '30d'} CPL</span>
+          </div>
+        </div>`;
+      }
+      if (vd) {
+        rows += `<div style="margin-bottom:4px">
+          <div style="font-weight:600;margin-bottom:3px">Volume: ${vd.worst} leads <span style="color:#92400E">vs ${vd.baseline}/mo baseline</span> <span style="color:#B91C1C;font-weight:700">(-${vd.pct}%)</span></div>
+          <div style="display:flex;align-items:center;gap:6px">
+            <div style="flex:1;height:6px;background:#f0ede6;border-radius:3px;overflow:hidden">
+              <div style="height:100%;border-radius:3px;background:linear-gradient(90deg, #D97706 0%, #B91C1C 100%);width:${Math.min(vd.pct/2, 100)}%"></div>
+            </div>
+            <span style="font-size:10px;color:#999;white-space:nowrap">${vd.isMtd ? 'MTD pace' : '30d'}</span>
+          </div>
+        </div>`;
+      }
+      driftHtml = `<div style="background:#FFFBEB;border:1.5px solid #D97706;padding:10px 12px;border-radius:6px;margin-bottom:10px;font-size:11px;text-align:left;line-height:1.5">
+        <div style="font-weight:700;font-size:12px;margin-bottom:6px;color:#92400E">Performance Drift — below this client's own historical best</div>
+        ${rows}
+        <div style="font-size:10px;color:#999;margin-top:6px">Baseline = best 3-month rolling average from the past 12 months</div>
+      </div>`;
+    }
+  }
+
+  detailTr.innerHTML = `<td colspan="20"><div class="detail-content" style="text-align:left">
+    <div style="max-width:600px;margin-bottom:12px">
+      ${trajectoryHtml}
+      ${driftHtml}
+      ${volKeyHtml}
+      <div style="font-size:11px;color:#666">
+        Start: ${fmtDate(r.start_date)} | Month ${r.months_in_program} | ${esc(r.inspection_type||'free')} | ${esc(r.field_mgmt||'none')}<br>
+        Rev: $${fmtNum(r.all_time_rev)} | Spend: $${fmtNum(r.all_time_spend)} | Open est: $${fmtNum(r.total_open_est_rev)}
+      </div>
+    </div>
+    <div class="detail-section" id="drill-content-${r.customer_id}">
+      <p class="loading-sm">Loading...</p>
+    </div>
+  </div></td>`;
+
+  tr.after(detailTr);
+
+  // Load drill-down data
+  const container = document.getElementById(`drill-content-${r.customer_id}`);
+  try {
+    if (drillType === 'leads') {
+      await loadLeadsDrill(container, r, start, end);
+    } else if (drillType === 'inspections') {
+      await loadInspectionsDrill(container, r, start, end);
+    } else if (drillType === 'revenue') {
+      await loadRevenueDrill(container, r, start, end);
+    } else if (drillType === 'spam') {
+      await loadSpamDrill(container, r);
+    } else if (drillType === 'abandoned') {
+      await loadAbandonedDrill(container, r);
+    } else if (drillType === 'calendar') {
+      await loadCalendarDrill(container, r);
+    } else {
+      await loadSummaryDrill(container, r, start, end);
+    }
+  } catch (err) {
+    container.innerHTML = `<p style="color:#CC3333;font-size:12px">Error: ${err.message}</p>`;
+  }
+}
+
+// ── Drill-down loaders ────────────────────────────────────────
+async function loadLeadsDrill(el, r, start, end) {
+  const [leadsResp, histResp] = await Promise.all([
+    fetch(`/api/client/${r.customer_id}/drilldown/leads?start=${start}&end=${end}`),
+    fetch(`/api/client/${r.customer_id}/history`)
+  ]);
+  const rows = await leadsResp.json().catch(() => []);
+  const history = await histResp.json().catch(() => []);
+  if (!Array.isArray(rows)) { el.innerHTML = `<p style="color:#CC3333;font-size:12px">Error loading leads: ${rows.error || 'unknown'}</p>`; return; }
+  if (!Array.isArray(history)) { el.innerHTML = `<p style="color:#CC3333;font-size:12px">Error loading history: ${history.error || 'unknown'}</p>`; return; }
+
+  // Compute monthly pace from history
+  let paceDetail = '';
+  if (history.length >= 2) {
+    const curMonth = history[history.length - 1];
+    const prevMonth = history[history.length - 2];
+    const curLeads = Number(curMonth.quality_leads || curMonth.leads);
+    const prevLeads = Number(prevMonth.quality_leads || prevMonth.leads);
+    const now = new Date();
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const dayOfMonth = now.getDate();
+    const projected = Math.round(curLeads / (dayOfMonth / daysInMonth));
+    if (prevLeads > 0) {
+      const paceChange = ((projected - prevLeads) / prevLeads * 100).toFixed(0);
+      paceDetail = `${curLeads} leads so far (day ${dayOfMonth}/${daysInMonth}), projected ${projected} for the full month vs ${prevLeads} last month`;
+    }
+  }
+
+  const qualityRows = rows.filter(l => l.is_quality);
+  const spamRows = rows.filter(l => !l.is_quality);
+  const cplContext = r.prior_cpl > 0 ? ' (was $' + Math.round(r.prior_cpl) + ')' : '';
+  let html = `<div class="drill-title">Google Ads Leads — ${qualityRows.length} Quality / ${rows.length} Total</div>
+    <div class="drill-subtitle">Period: ${start} to ${end} | CPL: $${Math.round(r.cpl)}${cplContext}${paceDetail ? ' | ' + paceDetail : ''}</div>`;
+
+  // Sparkline chart
+  if (history.length > 1) {
+    html += buildSparkline(history);
+  }
+
+  if (rows.length) {
+    html += `<table class="drill-table" style="margin-top:12px"><thead><tr><th>Date</th><th>Name</th><th>Phone</th><th>Type</th><th>Source</th><th></th></tr></thead><tbody>`;
+    rows.forEach(l => {
+      const spamPill = !l.is_quality ? `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:#fde8e8;color:#CC3333;border:1px solid #f5c6cb">Spam</span>` : '';
+      const typePill = l.type === 'form'
+        ? '<span style="display:inline-block;padding:2px 6px;border-radius:10px;font-size:10px;font-weight:600;background:#dbeafe;color:#1d4ed8">Form</span>'
+        : '<span style="display:inline-block;padding:2px 6px;border-radius:10px;font-size:10px;font-weight:600;background:#f0ede6;color:#555">Call</span>';
+      const rowStyle = !l.is_quality ? 'opacity:0.5' : '';
+      html += `<tr style="${rowStyle}"><td>${fmtDateTime(l.contact_date)}</td>
+        <td>${esc(l.name||'-')}</td><td>${esc(l.phone||'-')}</td>
+        <td>${typePill}</td><td>${esc(l.source_name||'-')}</td><td>${spamPill}</td></tr>`;
+    });
+    html += '</tbody></table>';
+  } else html += '<p style="color:#999;font-size:12px">No leads in this period</p>';
+  el.innerHTML = html;
+}
+
+function buildSparkline(history) {
+  const W = 500, H = 160, PAD = 35, PADL = 40;
+  const leads = history.map(h => Number(h.quality_leads || h.leads));
+  const labels = history.map(h => h.month_label);
+  const n = leads.length;
+
+  // Projected current month
+  const now = new Date();
+  const dayOfMonth = now.getDate();
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const currentActual = leads[n - 1];
+  const projected = dayOfMonth > 0 ? Math.round(currentActual / (dayOfMonth / daysInMonth)) : currentActual;
+
+  const max = Math.max(...leads, projected, 1);
+  const stepX = (W - PADL - PAD) / Math.max(n - 1, 1);
+
+  function x(i) { return PADL + i * stepX; }
+  function y(v) { return PAD + (H - PAD * 2) * (1 - v / max); }
+
+  // Build line path
+  const points = leads.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+  const linePath = points.map((p, i) => (i === 0 ? 'M' : 'L') + p).join(' ');
+
+  // Fill area
+  const areaPath = linePath + ` L${x(n-1).toFixed(1)},${(H-PAD).toFixed(1)} L${x(0).toFixed(1)},${(H-PAD).toFixed(1)} Z`;
+
+  let svg = `<svg width="${W}" height="${H}" style="background:#fff;border:1px solid #e8e5de;border-radius:6px;margin:8px 0">`;
+
+  // Y-axis gridlines
+  for (let i = 0; i <= 4; i++) {
+    const val = Math.round(max * i / 4);
+    const yy = y(val);
+    svg += `<line x1="${PADL}" y1="${yy}" x2="${W-PAD}" y2="${yy}" stroke="#f0ede6" stroke-width="1"/>`;
+    svg += `<text x="${PADL-4}" y="${yy+3}" text-anchor="end" font-size="9" fill="#999">${val}</text>`;
+  }
+
+  // Area fill
+  svg += `<path d="${areaPath}" fill="#E85D4D" opacity="0.1"/>`;
+
+  // Line
+  svg += `<path d="${linePath}" fill="none" stroke="#E85D4D" stroke-width="2.5" stroke-linejoin="round"/>`;
+
+  // Points + labels (draw before projection so projection overlays cleanly)
+  leads.forEach((v, i) => {
+    const isCurrentMonth = (i === n - 1);
+    svg += `<circle cx="${x(i)}" cy="${y(v)}" r="4" fill="#E85D4D" stroke="#fff" stroke-width="1.5"/>`;
+    // Position label above, but for current month put it to the left to avoid projection collision
+    if (isCurrentMonth) {
+      svg += `<text x="${x(i) - 8}" y="${y(v) - 8}" text-anchor="end" font-size="10" font-weight="600" fill="#333">${v}</text>`;
+      svg += `<text x="${x(i)}" y="${H - 4}" text-anchor="middle" font-size="8" fill="#999">day ${dayOfMonth}</text>`;
+    } else {
+      svg += `<text x="${x(i)}" y="${y(v) - 10}" text-anchor="middle" font-size="10" font-weight="600" fill="#333">${v}</text>`;
+    }
+    svg += `<text x="${x(i)}" y="${H - 14}" text-anchor="middle" font-size="9" fill="#999">${labels[i].replace(' 2026','').replace(' 2025','')}</text>`;
+  });
+
+  // Projected dashed line from current actual to projected
+  if (projected > currentActual) {
+    svg += `<line x1="${x(n-1).toFixed(1)}" y1="${y(currentActual).toFixed(1)}" x2="${x(n-1).toFixed(1)}" y2="${y(projected).toFixed(1)}" stroke="#E85D4D" stroke-width="2" stroke-dasharray="4,3" opacity="0.4"/>`;
+    svg += `<circle cx="${x(n-1)}" cy="${y(projected)}" r="3.5" fill="none" stroke="#E85D4D" stroke-width="1.5" stroke-dasharray="3,2" opacity="0.5"/>`;
+    svg += `<text x="${x(n-1) + 8}" y="${y(projected) + 3}" font-size="10" fill="#E85D4D" opacity="0.8" font-weight="600">→ ${projected} projected</text>`;
+  }
+
+  svg += '</svg>';
+  return svg;
+}
+
+
+async function loadInspectionsDrill(el, r, start, end) {
+  const resp = await fetch(`/api/client/${r.customer_id}/drilldown/inspections?start=${start}&end=${end}`);
+  const rows = await resp.json();
+  let html = `<div class="drill-title">Inspections Booked (${rows.length})</div>
+    <div class="drill-subtitle">GA leads created ${start} to ${end} with inspections scheduled</div>`;
+  if (rows.length) {
+    html += `<table class="drill-table"><thead><tr><th>Customer</th><th>Scheduled</th><th>Completed</th><th>Status</th><th>Tech</th><th>Address</th></tr></thead><tbody>`;
+    rows.forEach(i => {
+      const sched = fmtDate(i.inspection_scheduled_at);
+      const comp = fmtDate(i.inspection_completed_at);
+      html += `<tr><td>${esc(i.customer_name||'-')}</td><td>${sched}</td><td>${comp}</td>
+        <td>${friendlyStatus(i.inspection_status)}</td><td>${esc(i.employee_name||'-')}</td>
+        <td>${esc((i.service_address||'').substring(0,30))}</td></tr>`;
+    });
+    html += '</tbody></table>';
+  } else html += '<p style="color:#999;font-size:12px">No inspections for leads in this period</p>';
+  el.innerHTML = html;
+}
+
+async function loadRevenueDrill(el, r, start, end) {
+  const resp = await fetch(`/api/client/${r.customer_id}/drilldown/revenue?start=${start}&end=${end}`);
+  const rows = await resp.json();
+  const periodRev = rows.reduce((s,x) => s + Number(x.roas_revenue), 0);
+  const noInvAmt = r.approved_no_inv || 0;
+  const noInvPct = r.all_time_rev > 0 ? (noInvAmt / r.all_time_rev * 100).toFixed(0) : 0;
+  let html = `<div class="drill-title">Revenue Breakdown — ROAS ${r.roas>=10?r.roas.toFixed(0):r.roas.toFixed(2)}x</div>
+    <div class="drill-subtitle">Period revenue: $${fmtNum(periodRev)} / $${fmtNum(r.ad_spend)} spend | Guarantee: ${r.guarantee>=10?r.guarantee.toFixed(0):r.guarantee.toFixed(2)}x (all-time $${fmtNum(r.all_time_rev)} / $${fmtNum(r.all_time_spend)})</div>`;
+  if (noInvAmt > 0) {
+    html += `<div style="background:${noInvPct>30?'#F4CCCC':'#FFF2CC'};padding:8px 12px;border-radius:4px;margin:8px 0;font-size:12px;text-align:left">
+      <strong style="color:${noInvPct>30?'#990000':'#7F6000'}">Approved estimates with no invoice: $${fmtNum(noInvAmt)}</strong> (${noInvPct}% of all-time revenue)
+      — These estimates were approved but never invoiced. Revenue may be overstated.</div>`;
+  }
+  if (rows.length) {
+    html += `<table class="drill-table"><thead><tr><th>Customer</th><th>Source</th><th>ROAS Rev</th><th>Insp Inv</th><th>Treat Inv</th><th>Approved Est</th><th>Stage</th><th>Flag</th></tr></thead><tbody>`;
+    rows.forEach(x => {
+      const estNoInv = Number(x.approved_est) > 0 && Number(x.treatment_inv) === 0;
+      const estOverInv = Number(x.approved_est) > Number(x.treatment_inv) * 2 && Number(x.treatment_inv) > 0;
+      const flag = estNoInv ? '<span style="color:#990000" title="Approved estimate with no invoice">No Invoice</span>'
+        : estOverInv ? '<span style="color:#7F6000" title="Approved estimate is 2x+ the invoice amount">Est > Inv</span>' : '';
+      html += `<tr><td>${esc(x.customer_name||'-')}</td><td>${esc(x.revenue_source)}</td>
+        <td><strong>$${fmtNum(x.roas_revenue)}</strong></td>
+        <td>${x.inspection_inv>0?'$'+fmtNum(x.inspection_inv):'-'}</td>
+        <td>${x.treatment_inv>0?'$'+fmtNum(x.treatment_inv):'-'}</td>
+        <td>${x.approved_est>0?'$'+fmtNum(x.approved_est):'-'}</td>
+        <td>${esc(x.current_stage||'-')}</td><td>${flag}</td></tr>`;
+    });
+    html += '</tbody></table>';
+  } else html += '<p style="color:#999;font-size:12px">No revenue from leads in this period</p>';
+  el.innerHTML = html;
+}
+
+async function loadSpamDrill(el, r) {
+  const resp = await fetch(`/api/client/${r.customer_id}/drilldown/spam`);
+  const rows = await resp.json();
+  let html = `<div class="drill-title">Spam Leads (${rows.length})</div>
+    <div class="drill-subtitle">From GHL — opportunities marked as lost with spam reason</div>`;
+  if (rows.length) {
+    html += `<table class="drill-table"><thead><tr><th>Name</th><th>Stage</th><th>Lost Reason</th><th>Source</th></tr></thead><tbody>`;
+    rows.forEach(x => {
+      html += `<tr><td>${esc(x.name||'-')}</td><td>${esc(x.stage_name||'-')}</td>
+        <td>${esc(x.lost_reason||'-')}</td><td>${esc(x.source||'-')}</td></tr>`;
+    });
+    html += '</tbody></table>';
+  } else html += '<p style="color:#999;font-size:12px">No spam records</p>';
+  el.innerHTML = html;
+}
+
+async function loadAbandonedDrill(el, r) {
+  const resp = await fetch(`/api/client/${r.customer_id}/drilldown/abandoned`);
+  const rows = await resp.json();
+  let html = `<div class="drill-title">Abandoned Leads (${rows.length})</div>
+    <div class="drill-subtitle">From GHL — opportunities with abandoned status</div>`;
+  if (rows.length) {
+    html += `<table class="drill-table"><thead><tr><th>Name</th><th>Stage</th><th>Source</th><th>Reason</th></tr></thead><tbody>`;
+    rows.forEach(x => {
+      html += `<tr><td>${esc(x.name||'-')}</td><td>${esc(x.stage_name||'-')}</td>
+        <td>${esc(x.source||'-')}</td><td>${esc(x.lost_reason||'-')}</td></tr>`;
+    });
+    html += '</tbody></table>';
+  } else html += '<p style="color:#999;font-size:12px">No abandoned records</p>';
+  el.innerHTML = html;
+}
+
+async function loadCalendarDrill(el, r) {
+  const resp = await fetch(`/api/client/${r.customer_id}/drilldown/calendar`);
+  const rows = await resp.json();
+  const gaCount = rows.filter(x => x.is_google_ads).length;
+  const otherCount = rows.length - gaCount;
+  let html = `<div class="drill-title">On Calendar — Next 14 Days</div>
+    <div class="drill-subtitle">Google Ads: ${gaCount} | Other sources: ${otherCount} | Total: ${rows.length}</div>`;
+  if (rows.length) {
+    html += `<table class="drill-table"><thead><tr><th>Source</th><th>Customer</th><th>Date</th><th>Status</th><th>Description</th><th>Tech</th><th>Address</th></tr></thead><tbody>`;
+    rows.forEach(x => {
+      const dt = fmtDate(x.scheduled_at);
+      const src = x.lead_source || 'Unknown';
+      const srcBadge = x.is_google_ads
+        ? '<span style="background:#D9EAD3;color:#274E13;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">Google Ads</span>'
+        : '<span style="background:#e8e5de;color:#666;padding:2px 6px;border-radius:3px;font-size:10px">' + esc(src) + '</span>';
+      html += `<tr><td>${srcBadge}</td><td>${esc(x.customer_name||'-')}</td><td>${dt}</td>
+        <td>${friendlyStatus(x.status)}</td><td>${esc((x.description||'').substring(0,30))}</td>
+        <td>${esc(x.employee_name||'-')}</td>
+        <td>${esc((x.service_address||'').substring(0,30))}</td></tr>`;
+    });
+    html += '</tbody></table>';
+  } else html += '<p style="color:#CC3333;font-size:12px;font-weight:600">No inspections of any kind on calendar in the next 14 days</p>';
+  el.innerHTML = html;
+}
+
+async function loadSummaryDrill(el, r, start, end) {
+  // Trajectory box + insights already shown above — nothing extra needed
+  el.innerHTML = '';
+}
+
+function startBudgetEdit(td, r) {
+  if (td.querySelector('.budget-edit')) return; // already editing
+  const current = r.budget || 0;
+  td.innerHTML = `<div class="budget-edit">
+    <span>$</span><input type="number" value="${Math.round(current)}" step="100" min="0">
+    <button class="save-btn">Save</button>
+    <button class="cancel-btn">X</button>
+  </div>`;
+  const input = td.querySelector('input');
+  input.focus();
+  input.select();
+  td.querySelector('.save-btn').addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const newBudget = Number(input.value);
+    try {
+      const resp = await fetch('/api/client/' + r.customer_id + '/budget', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ budget: newBudget })
+      });
+      const result = await resp.json();
+      if (result.success) {
+        r.budget = newBudget;
+        td.dataset.budget = newBudget;
+        td.innerHTML = '$' + fmtNum(newBudget);
+      } else {
+        td.innerHTML = '$' + fmtNum(current);
+        alert('Error: ' + (result.error || 'Unknown'));
+      }
+    } catch (err) { td.innerHTML = '$' + fmtNum(current); alert('Error: ' + err.message); }
+  });
+  td.querySelector('.cancel-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    td.innerHTML = '$' + fmtNum(current);
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') td.querySelector('.save-btn').click();
+    if (e.key === 'Escape') td.querySelector('.cancel-btn').click();
+  });
+}
+
+function esc(s) { if(!s) return ''; const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+// Trend arrow: green up = improving, red down = declining
+function trendArrow(direction, title) {
+  if (!direction || direction === 'stable' || direction === 'new') return '';
+  const up = direction === 'improving' || direction === 'up';
+  return ' <span style="font-size:9px;' + (up ? 'color:#38761D' : 'color:#CC3333') + '" title="' + (title||'') + '">' + (up ? '&#9650;' : '&#9660;') + '</span>';
+}
+// Delta arrow for individual metrics (positive = up arrow, but for CPL positive = bad)
+function metricArrow(delta, invertGood) {
+  if (delta === null || delta === undefined || Math.abs(delta) < 0.001) return '';
+  const isUp = delta > 0;
+  const isGood = invertGood ? !isUp : isUp;
+  return ' <span style="font-size:8px;' + (isGood ? 'color:#38761D' : 'color:#CC3333') + '">' + (isUp ? '&#9650;' : '&#9660;') + '</span>';
+}
+function friendlyStatus(s) {
+  if (!s) return '-';
+  const map = {
+    'complete unrated': 'Completed',
+    'complete rated': 'Completed',
+    'needs scheduling': 'Needs Scheduling',
+    'in progress': 'In Progress',
+    'scheduled': 'Scheduled',
+    'created job from estimate': 'Job Created',
+    'user canceled': 'Canceled',
+    'pro canceled': 'Canceled',
+    'archived': 'Completed',
+    'late': 'Overdue',
+    'action_required': 'Action Required',
+    'requires_invoicing': 'Needs Invoice',
+    'upcoming': 'Upcoming',
+    'today': 'Today',
+    'unscheduled': 'Unscheduled',
+    'active': 'Active',
+    'awaiting_response': 'Awaiting Response',
+    'converted': 'Converted',
+    'approved': 'Approved',
+    'sent': 'Sent',
+    'draft': 'Draft',
+  };
+  return map[s.toLowerCase()] || s;
+}
+function fmtDate(v) {
+  if (!v) return '-';
+  const d = new Date(v);
+  if (isNaN(d)) return '-';
+  return (d.getMonth()+1) + '/' + d.getDate() + '/' + d.getFullYear();
+}
+function fmtDateTime(v) {
+  if (!v) return '-';
+  const d = new Date(v);
+  if (isNaN(d)) return '-';
+  const h = d.getHours(), m = d.getMinutes();
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 || 12;
+  return (d.getMonth()+1) + '/' + d.getDate() + '/' + d.getFullYear() + ' ' + h12 + ':' + String(m).padStart(2,'0') + ' ' + ampm;
+}
+function fmtNum(n) { return n==null?'0':Number(n).toLocaleString('en-US',{maximumFractionDigits:0}); }
+function fmtK(n) { if (n==null) return '$0'; n=Number(n); if (Math.abs(n)>=1000000) return '$'+( n/1000000).toFixed(1)+'M'; if (Math.abs(n)>=1000) return '$'+(n/1000).toFixed(1)+'K'; return '$'+Math.round(n); }
+document.getElementById('filterSearch').addEventListener('keydown', e => { if(e.key==='Enter') loadData(); });
+document.getElementById('filterSearch').addEventListener('input', renderTable);
+document.getElementById('filterManager').addEventListener('change', renderTable);
+document.getElementById('filterStatus').addEventListener('change', renderTable);
+// ── CRM Spam Toggle ─────────────────────────────────────────
+function toggleCrmSpam() {
+  const isAdjusted = document.getElementById('crmSpamToggle').checked;
+  const data = isAdjusted ? _trendDataAdjusted : _trendDataRaw;
+  if (data) renderRiskTrendChart(data);
+  updateCrmSpamHint(isAdjusted);
+}
+
+function updateCrmSpamHint(isAdjusted) {
+  const hint = document.getElementById('crmSpamHint');
+  if (isAdjusted) {
+    hint.textContent = 'Showing risk with CRM spam/abandoned removed from lead counts';
+  } else {
+    hint.textContent = 'Showing risk without CRM adjustments (ads manager view)';
+  }
+}
+
+// ── Monthly Risk Detail Drawer ──────────────────────────────
+function openMonthDrawer(monthStart, monthLabel) {
+  const overlay = document.getElementById('monthDrawerOverlay');
+  const drawer = document.getElementById('monthDrawer');
+  const body = document.getElementById('monthDrawerBody');
+  const title = document.getElementById('monthDrawerTitle');
+  const subtitle = document.getElementById('monthDrawerSubtitle');
+
+  title.textContent = monthLabel + ' Risk Breakdown';
+  subtitle.textContent = 'Click-through from trend chart';
+  body.innerHTML = '<div class="loading-sm">Loading...</div>';
+
+  overlay.classList.add('open');
+  drawer.classList.add('open');
+
+  fetch('/api/risk-trend/' + monthStart)
+    .then(r => r.json())
+    .then(data => {
+      if (!data.length) { body.innerHTML = '<div class="loading-sm">No data for this month.</div>'; return; }
+
+      const shortName = (n) => { const p = n.split(' | '); return p.length > 1 ? p[1] : p[0]; };
+
+      const groups = { Risk: [], Flag: [], Healthy: [] };
+      data.forEach(c => { (groups[c.dominant_status] || groups.Healthy).push(c); });
+
+      let html = '';
+
+      [{key:'Risk', color:'#CC3333', bg:'risk'}, {key:'Flag', color:'#b8860b', bg:'flag'}, {key:'Healthy', color:'#38761D', bg:'healthy'}].forEach(g => {
+        const clients = groups[g.key];
+        if (!clients.length) return;
+
+        html += '<div class="section-header"><span>' + g.key + '</span><span class="section-count">' + clients.length + ' client' + (clients.length > 1 ? 's' : '') + '</span></div>';
+
+        clients.forEach(c => {
+          const name = shortName(c.client_name);
+          const days = [];
+          if (+c.risk_days) days.push(c.risk_days + 'd risk');
+          if (+c.flag_days) days.push(c.flag_days + 'd flag');
+          if (+c.healthy_days) days.push(c.healthy_days + 'd healthy');
+
+          html += '<div class="client-row">';
+          html += '<div style="display:flex;justify-content:space-between;align-items:center">';
+          html += '<div class="client-name">' + name + '</div>';
+          html += '<span class="status-badge ' + g.bg + '">' + c.dominant_status + (c.risk_type ? ' — ' + c.risk_type : '') + '</span>';
+          html += '</div>';
+          html += '<div class="client-meta"><span>' + days.join(', ') + ' of ' + c.total_days + '</span></div>';
+
+          // Risk triggers
+          const riskTriggers = c.risk_triggers || [];
+          if (riskTriggers.length) {
+            riskTriggers.forEach(t => {
+              html += '<div class="trigger-item risk-trigger">' + t + '</div>';
+            });
+          }
+
+          // Flag triggers
+          const flagTriggers = c.flag_triggers || [];
+          if (flagTriggers.length) {
+            flagTriggers.forEach(t => {
+              html += '<div class="trigger-item flag-trigger">' + t + '</div>';
+            });
+          }
+
+          html += '</div>';
+        });
+      });
+
+      body.innerHTML = html;
+    })
+    .catch(err => {
+      body.innerHTML = '<div class="loading-sm" style="color:#CC3333">Error: ' + err.message + '</div>';
+    });
+}
+
+function closeMonthDrawer() {
+  document.getElementById('monthDrawerOverlay').classList.remove('open');
+  document.getElementById('monthDrawer').classList.remove('open');
+}
+</script>
+
+<div id="monthDrawerOverlay" class="month-drawer-overlay" onclick="closeMonthDrawer()"></div>
+<div id="monthDrawer" class="month-drawer">
+  <div class="month-drawer-header">
+    <button class="month-drawer-close" onclick="closeMonthDrawer()">&times;</button>
+    <h2 id="monthDrawerTitle"></h2>
+    <div class="subtitle" id="monthDrawerSubtitle"></div>
+  </div>
+  <div class="month-drawer-body" id="monthDrawerBody"></div>
+</div>
+
+</body>
+</html>

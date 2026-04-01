@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.blueprint.client-intelligence</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/node</string>
+        <string>/Users/bp/projects/workflows/client-intelligence/dashboard/server.js</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/bp/projects/workflows/client-intelligence/dashboard</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/bp/projects/workflows/client-intelligence/dashboard/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/bp/projects/workflows/client-intelligence/dashboard/stderr.log</string>
+</dict>
+</plist>

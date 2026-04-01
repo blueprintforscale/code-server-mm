@@ -1,0 +1,13 @@
+{
+  "name": "risk-dashboard",
+  "version": "1.0.0",
+  "description": "Client risk/flag dashboard for Blueprint for Scale",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.0",
+    "pg": "^8.11.0"
+  }
+}

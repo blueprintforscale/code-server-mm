@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lead Data Portal — Blueprint for Scale</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #F5F1E8; color: #000; min-height: 100vh; }
+
+    /* ── Header ── */
+    .header {
+      background: #000; color: #F5F1E8; padding: 1.25rem 2rem;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .header-left { display: flex; align-items: center; gap: 1rem; }
+    .header-left h1 { font-size: 1.1rem; font-weight: 700; letter-spacing: -0.01em; }
+    .header-left .divider { width: 1px; height: 24px; background: rgba(245,241,232,0.25); }
+    .header-left .portal-label { font-size: 0.8rem; color: rgba(245,241,232,0.6); font-weight: 400; text-transform: uppercase; letter-spacing: 0.08em; }
+    .header-right { font-size: 0.85rem; color: rgba(245,241,232,0.7); }
+
+    /* ── Container ── */
+    .container { max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem; }
+
+    /* ── Welcome ── */
+    .welcome { margin-bottom: 2rem; }
+    .welcome h2 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.25rem; }
+    .welcome p { color: #555; font-size: 0.9rem; line-height: 1.5; }
+
+    /* ── Summary Cards ── */
+    .summary-cards {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem; margin-bottom: 2rem;
+    }
+    .card {
+      background: #fff; border-radius: 10px; padding: 1.25rem 1.5rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .card .card-label { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #888; margin-bottom: 0.35rem; }
+    .card .card-value { font-size: 1.75rem; font-weight: 700; }
+    .card .card-sub { font-size: 0.78rem; color: #888; margin-top: 0.2rem; }
+    .card-accent { border-left: 3px solid #E85D4D; }
+    .card-clickable { cursor: pointer; transition: box-shadow 0.15s, transform 0.15s; }
+    .card-clickable:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.1); transform: translateY(-1px); }
+    .card-clickable.active { outline: 2px solid #000; outline-offset: -2px; }
+
+    /* ── Audit badge in cards ── */
+    .audit-highlight { display: flex; align-items: center; gap: 0.4rem; }
+    .audit-dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; flex-shrink: 0; }
+    .audit-dot.pending { background: #d4d4d4; }
+
+    /* ── Section Headers ── */
+    .section-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem;
+    }
+    .section-header h3 { font-size: 1.1rem; font-weight: 700; }
+    .section-filters { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+    .section-filters select, .section-filters input {
+      padding: 0.4rem 0.7rem; border: 1px solid #d4d0c8; border-radius: 6px;
+      font-size: 0.8rem; background: #fff; color: #000;
+    }
+    .section-filters input { width: 180px; }
+
+    /* ── Lead Table ── */
+    .table-wrap {
+      background: #fff; border-radius: 10px; overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      text-align: left; padding: 0.7rem 1rem; font-size: 0.7rem; font-weight: 600;
+      color: #888; text-transform: uppercase; letter-spacing: 0.05em;
+      background: #faf9f6; border-bottom: 1px solid #eee;
+    }
+    tbody td {
+      padding: 0.75rem 1rem; font-size: 0.85rem; border-bottom: 1px solid #f5f3ef;
+      vertical-align: middle;
+    }
+    tbody tr { transition: background 0.1s; }
+    tbody tr:hover { background: #faf9f6; }
+    tbody tr:last-child td { border-bottom: none; }
+
+    /* ── Status pills ── */
+    .pill {
+      display: inline-flex; align-items: center; gap: 0.3rem;
+      padding: 0.2rem 0.55rem; border-radius: 999px; font-size: 0.7rem; font-weight: 600;
+    }
+    .pill-google { background: #dcfce7; color: #166534; }
+    .pill-other { background: #f1f5f9; color: #64748b; }
+    .pill-lsa { background: #dbeafe; color: #1e40af; }
+    .pill-campaign { background: #fef3c7; color: #92400e; font-size: 0.65rem; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* ── Audit status ── */
+    .audit-badge {
+      display: inline-flex; align-items: center; gap: 0.3rem;
+      font-size: 0.72rem; font-weight: 500;
+    }
+    .audit-badge svg { flex-shrink: 0; }
+    .audit-verified { color: #16a34a; }
+    .audit-pending { color: #a3a3a3; }
+
+    /* ── Funnel pills in table ── */
+    .funnel-pill {
+      display: inline-block; padding: 0.15rem 0.45rem; border-radius: 4px;
+      font-size: 0.7rem; font-weight: 500;
+    }
+    .funnel-lead { background: #fef3c7; color: #92400e; }
+    .funnel-lost { background: #fef2f2; color: #E85D4D; }
+    .funnel-estimate { background: #dbeafe; color: #1e40af; }
+    .funnel-job { background: #dcfce7; color: #166534; }
+    .funnel-invoice { background: #d1fae5; color: #065f46; }
+
+    /* ── Flag button ── */
+    .flag-btn {
+      padding: 0.3rem 0.6rem; border: 1px solid #d4d0c8; border-radius: 6px;
+      background: #fff; font-size: 0.72rem; font-weight: 500; cursor: pointer;
+      color: #555; transition: all 0.15s;
+    }
+    .flag-btn:hover { border-color: #E85D4D; color: #E85D4D; background: #fef2f2; }
+    .flag-btn.flagged { background: #fef2f2; color: #E85D4D; border-color: #E85D4D; pointer-events: none; }
+
+    /* ── Revenue ── */
+    .revenue { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+    /* ── Pagination ── */
+    .pagination {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 1rem; font-size: 0.8rem; color: #888;
+    }
+    .pagination button {
+      padding: 0.35rem 0.7rem; border: 1px solid #d4d0c8; border-radius: 6px;
+      background: #fff; cursor: pointer; font-size: 0.8rem; color: #000;
+    }
+    .pagination button:disabled { opacity: 0.3; cursor: default; }
+
+    /* ── Expand row detail ── */
+    .detail-row { display: none; }
+    .detail-row.open { display: table-row; }
+    .detail-row td { background: #faf9f6; padding: 1rem 1.5rem; }
+    .detail-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem 1.5rem; }
+    .detail-item .label { font-size: 0.7rem; color: #888; text-transform: uppercase; letter-spacing: 0.04em; }
+    .detail-item .value { font-size: 0.85rem; font-weight: 500; margin-top: 0.1rem; }
+
+    /* ── Timeline ── */
+    .timeline { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid #eee; }
+    .timeline h4 { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #888; margin-bottom: 0.5rem; }
+    .timeline-entry {
+      display: flex; gap: 0.75rem; align-items: flex-start; padding: 0.35rem 0;
+      font-size: 0.8rem;
+    }
+    .timeline-dot {
+      width: 7px; height: 7px; border-radius: 50%; background: #d4d0c8;
+      margin-top: 5px; flex-shrink: 0;
+    }
+    .timeline-dot.active { background: #22c55e; }
+    .timeline-label { color: #555; }
+    .timeline-date { color: #aaa; font-size: 0.72rem; }
+    .timeline-amount { font-weight: 600; }
+
+    /* ── Modal ── */
+    .modal-overlay {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.4); z-index: 500; display: none;
+      justify-content: center; align-items: center;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: #fff; border-radius: 12px; padding: 2rem; max-width: 440px; width: 90%;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.15);
+    }
+    .modal h3 { font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem; }
+    .modal p { font-size: 0.85rem; color: #555; margin-bottom: 1rem; line-height: 1.5; }
+    .modal textarea {
+      width: 100%; padding: 0.5rem; border: 1px solid #d4d0c8; border-radius: 6px;
+      font-size: 0.85rem; font-family: inherit; resize: vertical; min-height: 80px;
+      margin-bottom: 1rem;
+    }
+    .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
+    .modal-btn {
+      padding: 0.5rem 1rem; border: none; border-radius: 6px; font-size: 0.85rem;
+      font-weight: 500; cursor: pointer;
+    }
+    .modal-btn-cancel { background: #f1f1ee; color: #555; }
+    .modal-btn-submit { background: #E85D4D; color: #fff; }
+    .modal-btn-submit:hover { background: #d04e3f; }
+
+    /* ── Toast ── */
+    .toast {
+      position: fixed; bottom: 2rem; right: 2rem; background: #000; color: #F5F1E8;
+      padding: 0.75rem 1.5rem; border-radius: 8px; font-size: 0.85rem; z-index: 600;
+      opacity: 0; transition: opacity 0.3s; pointer-events: none;
+    }
+    .toast.show { opacity: 1; }
+
+    /* ── Footer ── */
+    .footer {
+      text-align: center; padding: 2rem; font-size: 0.75rem; color: #aaa;
+    }
+
+    /* ── Empty state ── */
+    .empty-state { text-align: center; padding: 3rem 1rem; color: #888; }
+    .empty-state p { font-size: 0.9rem; }
+
+    /* ── Loading ── */
+    .loading { text-align: center; padding: 3rem; color: #aaa; font-size: 0.9rem; }
+
+    /* ── Responsive ── */
+    @media (max-width: 768px) {
+      .container { padding: 1rem; }
+      .summary-cards { grid-template-columns: 1fr 1fr; }
+      .detail-grid { grid-template-columns: 1fr 1fr; }
+      .header { padding: 1rem; }
+      thead th, tbody td { padding: 0.5rem 0.6rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="header-left">
+      <h1>Blueprint for Scale</h1>
+      <div class="divider"></div>
+      <span class="portal-label">Lead Data Portal</span>
+    </div>
+    <div class="header-right" id="headerClient"></div>
+  </div>
+
+  <div class="container">
+    <!-- Welcome -->
+    <div class="welcome">
+      <h2 id="welcomeTitle">Your Lead Data</h2>
+      <p>Review your Google Ads leads, see what's been verified by our team, and flag anything that looks incorrect. Leads marked with a green check have been manually audited.</p>
+    </div>
+
+    <!-- Date Range (above everything) -->
+    <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:1.5rem;">
+      <span style="font-size:0.8rem;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:0.05em;">Date Range</span>
+      <input type="date" id="dateFrom" style="padding:0.4rem 0.7rem;border:1px solid #d4d0c8;border-radius:6px;font-size:0.8rem;background:#fff;">
+      <span style="color:#aaa;font-size:0.8rem;">to</span>
+      <input type="date" id="dateTo" style="padding:0.4rem 0.7rem;border:1px solid #d4d0c8;border-radius:6px;font-size:0.8rem;background:#fff;">
+    </div>
+
+    <!-- Summary Cards -->
+    <div class="summary-cards" id="summaryCards">
+      <div class="card card-clickable" onclick="filterByCard('all')">
+        <div class="card-label">Total Leads</div>
+        <div class="card-value" id="statLeads">—</div>
+        <div class="card-sub" id="statLeadsSub"></div>
+      </div>
+      <div class="card">
+        <div class="card-label">Manually Audited</div>
+        <div class="card-value audit-highlight">
+          <span class="audit-dot"></span>
+          <span id="statAudited">—</span>
+        </div>
+        <div class="card-sub" id="statAuditedSub"></div>
+      </div>
+      <div class="card card-clickable" onclick="filterByCard('revenue')">
+        <div class="card-label">Revenue Closed</div>
+        <div class="card-value" id="statRevenue">—</div>
+        <div class="card-sub" id="statRevenueSub"></div>
+      </div>
+      <div class="card card-accent card-clickable" onclick="filterByCard('pipeline')">
+        <div class="card-label">Open Estimates</div>
+        <div class="card-value" id="statPipeline">—</div>
+        <div class="card-sub" id="statPipelineSub"></div>
+      </div>
+    </div>
+
+    <!-- Lead Table -->
+    <div class="section-header">
+      <h3>Your Leads</h3>
+      <div class="section-filters">
+        <input type="text" id="searchInput" placeholder="Search by name or phone...">
+        <select id="filterSource">
+          <option value="all">All sources</option>
+          <option value="google_ads">Google Ads</option>
+          <option value="lsa">LSA</option>
+          <option value="unknown">Other / Unknown</option>
+        </select>
+        <select id="filterStatus">
+          <option value="all">All leads</option>
+          <option value="in_funnel">In funnel</option>
+          <option value="lead_only">Lead only</option>
+          <option value="revenue">Has revenue</option>
+          <option value="pipeline">Open estimates</option>
+          <option value="approved">Audited</option>
+          <option value="needs_review">Not yet audited</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th>Name</th>
+            <th>Date</th>
+            <th>Source</th>
+            <th>Stage</th>
+            <th>Revenue</th>
+            <th>Audit Status</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="leadsBody">
+          <tr><td colspan="8" class="loading">Loading leads...</td></tr>
+        </tbody>
+      </table>
+      <div class="pagination">
+        <span id="pageInfo">—</span>
+        <div style="display:flex;gap:0.5rem;">
+          <button id="prevPage" disabled>Previous</button>
+          <button id="nextPage">Next</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">
+      Data synced automatically from your field management software. Questions? Contact your account manager.
+    </div>
+  </div>
+
+  <!-- Flag Modal -->
+  <div class="modal-overlay" id="flagModal">
+    <div class="modal">
+      <h3>Flag This Lead</h3>
+      <p id="flagModalName"></p>
+      <label style="font-size:0.8rem;font-weight:500;display:block;margin-bottom:0.35rem;">What's the issue?</label>
+      <select id="flagReason" style="width:100%;padding:0.5rem;border:1px solid #d4d0c8;border-radius:6px;font-size:0.85rem;margin-bottom:0.75rem;">
+        <option value="not_google_ads">This lead didn't come from Google Ads</option>
+        <option value="spam">Spam / not a lead</option>
+        <option value="out_of_area">Out of area</option>
+        <option value="wrong_service">Wrong service</option>
+        <option value="wrong_person">This is the wrong person / bad match</option>
+        <option value="wrong_revenue">The revenue amount is incorrect</option>
+        <option value="duplicate">This is a duplicate lead</option>
+        <option value="other">Other</option>
+      </select>
+      <label style="font-size:0.8rem;font-weight:500;display:block;margin-bottom:0.35rem;">Additional details (optional)</label>
+      <textarea id="flagNotes" placeholder="Tell us more so we can fix it..."></textarea>
+      <div class="modal-actions">
+        <button class="modal-btn modal-btn-cancel" onclick="closeFlagModal()">Cancel</button>
+        <button class="modal-btn modal-btn-submit" onclick="submitFlag()">Submit Flag</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    // ═══════════ State ═══════════
+    let currentPage = 0;
+    const PAGE_SIZE = 200;
+    let expandedRow = null;
+    let flagTarget = null;
+
+    // Get client token from URL
+    const pathParts = window.location.pathname.split('/');
+    const CLIENT_TOKEN = pathParts[pathParts.length - 1] || pathParts[pathParts.length - 2];
+
+    // ═══════════ Init ═══════════
+    async function init() {
+      // Default: last 30 days + Google Ads
+      const today = new Date();
+      const thirtyAgo = new Date(today);
+      thirtyAgo.setDate(thirtyAgo.getDate() - 30);
+      document.getElementById('dateFrom').value = thirtyAgo.toISOString().split('T')[0];
+      document.getElementById('dateTo').value = today.toISOString().split('T')[0];
+      document.getElementById('filterSource').value = 'google_ads';
+
+      // Load info + leads in parallel (summary comes from leads response)
+      try {
+        const infoPromise = api('/api/client-portal/info').then(info => {
+          const bizName = info.client_name.includes('|') ? info.client_name.split('|').pop().trim() : info.client_name;
+          document.getElementById('headerClient').textContent = bizName;
+          document.getElementById('welcomeTitle').textContent = `${bizName} — Lead Data`;
+        });
+        await Promise.all([infoPromise, loadLeads()]);
+      } catch (err) {
+        console.error('Init error:', err);
+      }
+
+      // Filter handlers
+      document.getElementById('filterSource').addEventListener('change', () => { currentPage = 0; loadLeads(); });
+      document.getElementById('filterStatus').addEventListener('change', () => {
+        activeCard = null;
+        document.querySelectorAll('.card-clickable').forEach(el => el.classList.remove('active'));
+        currentPage = 0; loadLeads();
+      });
+      document.getElementById('dateFrom').addEventListener('change', () => { currentPage = 0; loadLeads(); });
+      document.getElementById('dateTo').addEventListener('change', () => { currentPage = 0; loadLeads(); });
+
+      let searchTimeout;
+      document.getElementById('searchInput').addEventListener('input', () => {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => { currentPage = 0; loadLeads(); }, 300);
+      });
+
+      document.getElementById('prevPage').addEventListener('click', () => { currentPage--; loadLeads(); });
+      document.getElementById('nextPage').addEventListener('click', () => { currentPage++; loadLeads(); });
+    }
+
+    async function api(path) {
+      const res = await fetch(path, {
+        headers: { 'X-Client-Token': CLIENT_TOKEN }
+      });
+      if (!res.ok) throw new Error('API error');
+      return res.json();
+    }
+
+    async function apiPost(path, body) {
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Client-Token': CLIENT_TOKEN },
+        body: JSON.stringify(body),
+      });
+      return res.json();
+    }
+
+    // ═══════════ Update Summary from leads response ═══════════
+    function updateSummary(summary) {
+      document.getElementById('statLeads').textContent = Number(summary.total_leads).toLocaleString();
+      document.getElementById('statLeadsSub').textContent = `${summary.in_funnel} in funnel, ${summary.lead_only} lead only`;
+
+      const auditPct = summary.total_leads > 0 ? Math.round((summary.audited / summary.total_leads) * 100) : 0;
+      document.getElementById('statAudited').textContent = `${auditPct}%`;
+      document.getElementById('statAuditedSub').textContent = `${summary.audited} of ${summary.total_leads} leads verified`;
+
+      document.getElementById('statRevenue').textContent = '$' + Math.round(summary.roas_revenue).toLocaleString();
+      document.getElementById('statRevenueSub').textContent = `From ${summary.leads_with_revenue} leads`;
+
+      document.getElementById('statPipeline').textContent = '$' + Math.round(summary.pipeline_revenue).toLocaleString();
+      document.getElementById('statPipelineSub').textContent = 'Pending approval';
+    }
+
+    // ═══════════ Load Leads ═══════════
+    async function loadLeads() {
+      const params = new URLSearchParams({
+        limit: PAGE_SIZE,
+        offset: currentPage * PAGE_SIZE,
+      });
+      const source = document.getElementById('filterSource').value;
+      const status = document.getElementById('filterStatus').value;
+      const search = document.getElementById('searchInput').value.trim();
+      const dateFrom = document.getElementById('dateFrom').value;
+      const dateTo = document.getElementById('dateTo').value;
+      if (source !== 'all') params.set('source', source);
+      if (status !== 'all') params.set('filter', status);
+      if (search) params.set('search', search);
+      if (dateFrom) params.set('date_from', dateFrom);
+      if (dateTo) params.set('date_to', dateTo);
+
+      const data = await api(`/api/client-portal/leads?${params}`);
+      if (data.summary) updateSummary(data.summary);
+      const totalPages = Math.ceil(data.total / PAGE_SIZE);
+
+      document.getElementById('pageInfo').textContent = `Page ${currentPage + 1} of ${totalPages || 1}  ·  ${data.total} leads`;
+      document.getElementById('prevPage').disabled = currentPage === 0;
+      document.getElementById('nextPage').disabled = currentPage >= totalPages - 1;
+
+      const tbody = document.getElementById('leadsBody');
+      if (!data.items.length) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-state"><p>No leads match your filters.</p></td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = data.items.map((lead, idx) => {
+        const sourcePill = getSourcePill(lead);
+        const campaignPill = lead.campaign_name ? `<span class="pill pill-campaign" title="${esc(lead.campaign_name)}">${esc(lead.campaign_name)}</span>` : '';
+        const funnelPill = getFunnelPill(lead);
+        const auditBadge = getAuditBadge(lead);
+        const revenue = lead.roas_revenue > 0 ? '$' + Number(lead.roas_revenue).toLocaleString() : '—';
+        const date = lead.lead_date ? new Date(lead.lead_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+        const isFlagged = lead.client_flag_reason;
+
+        return `
+          <tr onclick="${lead.hcp_customer_id ? `toggleDetail('${lead.hcp_customer_id}', ${idx})` : ''}" style="cursor:${lead.hcp_customer_id ? 'pointer' : 'default'}">
+            <td style="width:30px;color:#ccc;font-size:0.75rem">${lead.hcp_customer_id ? (expandedRow === lead.hcp_customer_id ? '&#9660;' : '&#9654;') : ''}</td>
+            <td><strong>${esc(lead.first_name || '')} ${esc(lead.last_name || '')}</strong>${!lead.hcp_customer_id ? ' <span style="font-size:0.65rem;color:#aaa;font-weight:400">' + (lead.match_method === 'form' ? 'Form' : 'Call') + ' only</span>' : ''}</td>
+            <td style="white-space:nowrap">${date}</td>
+            <td>${sourcePill} ${campaignPill}</td>
+            <td>${funnelPill}</td>
+            <td class="revenue">${revenue}</td>
+            <td>${auditBadge}</td>
+            <td>
+              <button class="flag-btn${isFlagged ? ' flagged' : ''}" onclick="event.stopPropagation(); openFlagModal('${lead.hcp_customer_id || ''}', '${esc(lead.first_name || '')} ${esc(lead.last_name || '')}', '${lead.lead_date || ''}', '${lead.match_method || ''}', '${lead.caller_phone || ''}', '${lead.cr_id || ''}')">
+                ${isFlagged ? 'Flagged' : 'Flag'}
+              </button>
+            </td>
+          </tr>
+          ${lead.hcp_customer_id ? `<tr class="detail-row" id="detail-${lead.hcp_customer_id}">
+            <td colspan="8" id="detail-content-${lead.hcp_customer_id}"></td>
+          </tr>` : ''}
+        `;
+      }).join('');
+    }
+
+    // ═══════════ Detail expand ═══════════
+    async function toggleDetail(hcpCustomerId, idx) {
+      const row = document.getElementById('detail-' + hcpCustomerId);
+      if (expandedRow === hcpCustomerId) {
+        row.classList.remove('open');
+        expandedRow = null;
+        return;
+      }
+      // Close previous
+      if (expandedRow) {
+        const prev = document.getElementById('detail-' + expandedRow);
+        if (prev) prev.classList.remove('open');
+      }
+      expandedRow = hcpCustomerId;
+      row.classList.add('open');
+
+      const cell = document.getElementById('detail-content-' + hcpCustomerId);
+      cell.innerHTML = '<div class="loading" style="padding:1rem">Loading details...</div>';
+
+      const data = await api(`/api/client-portal/lead/${hcpCustomerId}`);
+      renderDetail(cell, data);
+    }
+
+    function renderDetail(cell, data) {
+      const c = data.customer;
+      let html = '<div class="detail-grid">';
+      html += detailItem('Phone', c.phone_primary || '—');
+      html += detailItem('Email', c.email || '—');
+      html += detailItem('Source', c.lead_source || '—');
+      html += detailItem('Match Method', formatMatchMethod(c.match_method));
+      html += detailItem('Review Status', formatReviewStatus(c.review_status));
+      html += detailItem('Reviewed By', c.reviewed_by || '—');
+      html += '</div>';
+
+      // Timeline
+      const events = [];
+      if (data.callrail) {
+        events.push({ type: 'Call', date: data.callrail.start_time, detail: data.callrail.gclid ? 'Google Ads click' : (data.callrail.classified_source || 'Direct'), active: true });
+      }
+      data.inspections.forEach(i => {
+        if (i.record_status === 'active') {
+          events.push({ type: 'Inspection', date: i.scheduled_at, detail: i.status, amount: i.total_amount_cents, active: ['complete rated','complete unrated'].includes(i.status) });
+        }
+      });
+      data.estimates.forEach(e => {
+        if (e.record_status === 'active') {
+          events.push({ type: 'Estimate', date: e.sent_at, detail: e.status, amount: e.highest_option_cents, active: e.status === 'approved' });
+        }
+      });
+      data.jobs.forEach(j => {
+        if (j.record_status === 'active') {
+          events.push({ type: 'Job', date: j.scheduled_at, detail: j.status, amount: j.total_amount_cents, active: ['complete rated','complete unrated'].includes(j.status) });
+        }
+      });
+      data.invoices.forEach(inv => {
+        events.push({ type: 'Invoice', date: inv.invoice_date, detail: inv.status, amount: inv.amount_cents, active: inv.status === 'paid' });
+      });
+
+      events.sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
+
+      if (events.length) {
+        html += '<div class="timeline"><h4>Activity Timeline</h4>';
+        events.forEach(ev => {
+          const dateStr = ev.date ? new Date(ev.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+          const amtStr = ev.amount ? ' · $' + (ev.amount / 100).toLocaleString() : '';
+          html += `<div class="timeline-entry">
+            <div class="timeline-dot${ev.active ? ' active' : ''}"></div>
+            <div>
+              <span class="timeline-label"><strong>${ev.type}</strong> — ${ev.detail}${amtStr}</span>
+              <span class="timeline-date"> ${dateStr}</span>
+            </div>
+          </div>`;
+        });
+        html += '</div>';
+      }
+
+      // Audit history
+      if (data.reviews.length) {
+        html += '<div class="timeline" style="margin-top:0.75rem"><h4>Audit History</h4>';
+        data.reviews.forEach(r => {
+          const dateStr = new Date(r.performed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          html += `<div class="timeline-entry">
+            <div class="timeline-dot active"></div>
+            <div>
+              <span class="timeline-label"><strong>${formatAction(r.action)}</strong> by ${r.performed_by}</span>
+              <span class="timeline-date"> ${dateStr}</span>
+            </div>
+          </div>`;
+        });
+        html += '</div>';
+      }
+
+      cell.innerHTML = html;
+    }
+
+    function detailItem(label, value) {
+      return `<div class="detail-item"><div class="label">${label}</div><div class="value">${value}</div></div>`;
+    }
+
+    // ═══════════ Flag Modal ═══════════
+    function openFlagModal(hcpCustomerId, name, leadDate, matchMethod, callerPhone, crId) {
+      flagTarget = { hcp_customer_id: hcpCustomerId || null, name, lead_date: leadDate, match_method: matchMethod, caller_phone: callerPhone || null, callrail_id: crId || null };
+      document.getElementById('flagModalName').textContent = `Flagging lead: ${name}`;
+      document.getElementById('flagReason').value = 'not_google_ads';
+      document.getElementById('flagNotes').value = '';
+      document.getElementById('flagModal').classList.add('open');
+    }
+
+    function closeFlagModal() {
+      document.getElementById('flagModal').classList.remove('open');
+      flagTarget = null;
+    }
+
+    async function submitFlag() {
+      if (!flagTarget) return;
+      const reason = document.getElementById('flagReason').value;
+      const notes = document.getElementById('flagNotes').value.trim();
+
+      const res = await apiPost('/api/client-portal/flag', {
+        hcp_customer_id: flagTarget.hcp_customer_id,
+        name: flagTarget.name,
+        lead_date: flagTarget.lead_date,
+        match_method: flagTarget.match_method,
+        caller_phone: flagTarget.caller_phone,
+        callrail_id: flagTarget.callrail_id,
+        reason,
+        notes,
+      });
+
+      if (res.success) {
+        showToast('Lead flagged — our team will review it.');
+        closeFlagModal();
+        await loadLeads();
+      } else {
+        showToast('Error: ' + (res.error || 'Something went wrong'));
+      }
+    }
+
+    // ═══════════ Helpers ═══════════
+    let activeCard = null;
+    function filterByCard(card) {
+      if (card === 'all' || activeCard === card) {
+        activeCard = null;
+        document.getElementById('filterStatus').value = 'all';
+      } else {
+        activeCard = card;
+        document.getElementById('filterStatus').value = card === 'revenue' ? 'revenue' : 'pipeline';
+      }
+      // Update card highlight
+      document.querySelectorAll('.card-clickable').forEach(el => el.classList.remove('active'));
+      if (activeCard) {
+        const cardMap = { 'revenue': 1, 'pipeline': 2 };
+        const idx = cardMap[activeCard];
+        if (idx !== undefined) document.querySelectorAll('.card-clickable')[idx].classList.add('active');
+      }
+      currentPage = 0;
+      loadLeads();
+    }
+
+    function getSourcePill(lead) {
+      const src = lead.lead_source_type || '';
+      if (src === 'google_ads' || src === 'Google Ads') return '<span class="pill pill-google">Google Ads</span>';
+      if (src === 'lsa' || src === 'LSA') return '<span class="pill pill-lsa">LSA</span>';
+      return '<span class="pill pill-other">' + esc(src || 'Unknown') + '</span>';
+    }
+
+    function getFunnelPill(lead) {
+      let stage = lead.pipeline_stage || 'New Lead';
+
+      // No GHL stage remapping — those are already client-friendly
+
+      // Detect lost/dead/spam/drip — show in red
+      const lowerStage = stage.toLowerCase();
+      const isLost = ['spam','not a lead','wrong number','out of area','tenant','abandoned',
+        'lost (reason not given)','existing/duplicate client','other','wrong service'].some(r => lowerStage.includes(r))
+        || lowerStage.includes('-dead') || lowerStage.includes('-drip') || lowerStage.includes('🗑');
+      if (isLost) {
+        // Clean up the label
+        const cleanLabel = stage.replace(/🗑️?\s*/g, '').replace(/-Dead$/i, '').replace(/-Drip$/i, '').trim();
+        return `<span class="funnel-pill funnel-lost">${cleanLabel}</span>`;
+      }
+
+      const stageColors = {
+        'Invoice Paid':          'funnel-invoice',
+        'Invoiced':              'funnel-invoice',
+        'Job Complete':          'funnel-invoice',
+        'Job In Progress':       'funnel-job',
+        'Job Scheduled':         'funnel-job',
+        'Estimate Approved':     'funnel-estimate',
+        'Estimate Sent':         'funnel-estimate',
+        'Inspection Complete':   'funnel-estimate',
+        'Inspection Scheduled':  'funnel-estimate',
+        'Qualifying':            'funnel-lead',
+        'Contacted':             'funnel-lead',
+        'Follow-up':             'funnel-lead',
+        'Lead':                  'funnel-lead',
+        'New Lead':              'funnel-lead',
+      };
+      return `<span class="funnel-pill ${stageColors[stage] || 'funnel-lead'}">${stage}</span>`;
+    }
+
+    function getAuditBadge(lead) {
+      const status = lead.review_status;
+      if (['approved', 'confirmed', 'overridden', 'resolved'].includes(status)) {
+        return `<span class="audit-badge audit-verified">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M13.3 4.3L6.5 11.1L2.7 7.3" stroke="#16a34a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Verified
+        </span>`;
+      }
+      return `<span class="audit-badge audit-pending">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="5.5" stroke="#a3a3a3" stroke-width="1.5"/></svg>
+        Pending
+      </span>`;
+    }
+
+    function formatMatchMethod(m) {
+      const map = { phone_exact: 'Phone match', phone_normalized: 'Phone match', email: 'Email match', form_phone: 'Form submission' };
+      return map[m] || m || '—';
+    }
+
+    function formatReviewStatus(s) {
+      const map = { approved: 'Verified', confirmed: 'Verified', overridden: 'Source corrected', pending: 'Pending review', rejected: 'Rejected' };
+      return map[s] || s || 'Pending';
+    }
+
+    function formatAction(a) {
+      const map = {
+        approve_lead: 'Approved', confirm_match: 'Match confirmed', reject_match: 'Match rejected',
+        override_attribution: 'Source corrected', dismiss: 'Issue dismissed',
+        reclassify_to_inspection: 'Reclassified', reclassify_to_job: 'Reclassified',
+      };
+      return map[a] || a.replace(/_/g, ' ');
+    }
+
+    function esc(str) {
+      const d = document.createElement('div');
+      d.textContent = str;
+      return d.innerHTML;
+    }
+
+    function showToast(msg) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.classList.add('show');
+      setTimeout(() => el.classList.remove('show'), 3500);
+    }
+
+    init();
+  </script>
+</body>
+</html>

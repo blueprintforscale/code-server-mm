@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HCP Lead Review</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #f1f5f9; color: #1e293b; }
+
+    /* Header */
+    .header { background: #1e293b; color: #fff; padding: 1rem 1.5rem; display: flex; align-items: center; justify-content: space-between; }
+    .header h1 { font-size: 1.25rem; font-weight: 600; }
+    .header .stats { font-size: 0.875rem; color: #94a3b8; }
+
+    /* Filters */
+    .filters { background: #fff; padding: 1rem 1.5rem; border-bottom: 1px solid #e2e8f0; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+    .filters select, .filters input { padding: 0.4rem 0.6rem; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 0.875rem; background: #fff; }
+    .filters label { font-size: 0.75rem; color: #64748b; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }
+    .filter-group { display: flex; flex-direction: column; gap: 0.25rem; }
+
+    /* Queue table */
+    .queue-container { padding: 1rem 1.5rem; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    th { background: #f8fafc; text-align: left; padding: 0.6rem 0.75rem; font-size: 0.75rem; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #e2e8f0; }
+    td { padding: 0.6rem 0.75rem; font-size: 0.875rem; border-bottom: 1px solid #f1f5f9; }
+    tr:hover { background: #f8fafc; cursor: pointer; }
+    tr.selected { background: #eff6ff; }
+
+    /* Priority badges */
+    .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; }
+    .badge-high { background: #fef2f2; color: #dc2626; }
+    .badge-medium { background: #fffbeb; color: #d97706; }
+    .badge-low { background: #f0fdf4; color: #16a34a; }
+    .badge-info { background: #f1f5f9; color: #64748b; }
+
+    /* Flag tags */
+    .flag { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.7rem; background: #e2e8f0; color: #475569; margin: 0.1rem; }
+    .flag-name_mismatch { background: #fef3c7; color: #92400e; }
+    .flag-job_no_estimate { background: #fce7f3; color: #9d174d; }
+    .flag-multiple_jobs, .flag-multiple_estimates, .flag-multiple_inspections { background: #ede9fe; color: #6d28d9; }
+    .flag-classification_fallback { background: #e0f2fe; color: #0369a1; }
+
+    /* Detail panel */
+    .detail-panel { position: fixed; top: 0; right: -600px; width: 600px; height: 100vh; background: #fff; box-shadow: -4px 0 12px rgba(0,0,0,.15); transition: right 0.25s ease; z-index: 100; overflow-y: auto; }
+    .detail-panel.open { right: 0; }
+    .detail-panel .panel-header { background: #1e293b; color: #fff; padding: 1rem 1.5rem; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 1; }
+    .detail-panel .panel-header h2 { font-size: 1.1rem; }
+    .close-btn { background: none; border: none; color: #94a3b8; font-size: 1.5rem; cursor: pointer; }
+    .close-btn:hover { color: #fff; }
+    .panel-body { padding: 1.5rem; }
+
+    /* Detail sections */
+    .detail-section { margin-bottom: 1.5rem; }
+    .detail-section h3 { font-size: 0.8rem; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; padding-bottom: 0.3rem; border-bottom: 1px solid #e2e8f0; }
+    .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+    .detail-item { font-size: 0.85rem; }
+    .detail-item .label { color: #64748b; font-size: 0.75rem; }
+    .detail-item .value { font-weight: 500; }
+
+    /* Sub-tables in detail */
+    .sub-table { width: 100%; font-size: 0.8rem; margin-top: 0.5rem; }
+    .sub-table th { padding: 0.3rem 0.5rem; font-size: 0.7rem; }
+    .sub-table td { padding: 0.3rem 0.5rem; font-size: 0.8rem; }
+
+    /* Action buttons */
+    .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 1rem; }
+    .btn { padding: 0.4rem 0.8rem; border: none; border-radius: 6px; font-size: 0.8rem; font-weight: 500; cursor: pointer; transition: opacity 0.15s; }
+    .btn:hover { opacity: 0.85; }
+    .btn-confirm { background: #22c55e; color: #fff; }
+    .btn-reject { background: #ef4444; color: #fff; }
+    .btn-override { background: #3b82f6; color: #fff; }
+    .btn-dismiss { background: #94a3b8; color: #fff; }
+    .btn-reclassify { background: #8b5cf6; color: #fff; }
+
+    /* Notes textarea */
+    .note-input { width: 100%; padding: 0.4rem; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 0.8rem; font-family: inherit; resize: vertical; min-height: 2.5rem; margin-top: 0.5rem; }
+
+    /* Reviewer name */
+    .reviewer-bar { background: #f8fafc; padding: 0.5rem 1rem; border-bottom: 1px solid #e2e8f0; font-size: 0.8rem; display: flex; align-items: center; gap: 0.5rem; position: sticky; top: 48px; z-index: 1; }
+    .reviewer-bar input { padding: 0.3rem 0.5rem; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 0.8rem; width: 150px; }
+
+    /* Notes display */
+    .notes-text { background: #f8fafc; padding: 0.5rem; border-radius: 4px; font-size: 0.8rem; white-space: pre-wrap; max-height: 150px; overflow-y: auto; border: 1px solid #e2e8f0; }
+
+    /* Pagination */
+    .pagination { display: flex; justify-content: space-between; align-items: center; padding: 1rem 0; font-size: 0.85rem; }
+    .pagination button { padding: 0.4rem 0.8rem; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; cursor: pointer; font-size: 0.8rem; }
+    .pagination button:disabled { opacity: 0.4; cursor: default; }
+
+    /* Toast */
+    .toast { position: fixed; bottom: 2rem; right: 2rem; background: #1e293b; color: #fff; padding: 0.75rem 1.25rem; border-radius: 8px; font-size: 0.875rem; z-index: 200; opacity: 0; transition: opacity 0.3s; }
+    .toast.show { opacity: 1; }
+
+    /* Overlay */
+    .overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.3); z-index: 99; display: none; }
+    .overlay.show { display: block; }
+
+    /* Audit log */
+    .audit-entry { font-size: 0.8rem; padding: 0.4rem 0; border-bottom: 1px solid #f1f5f9; }
+    .audit-entry .audit-action { font-weight: 600; }
+    .audit-entry .audit-meta { color: #64748b; font-size: 0.7rem; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>HCP Lead Review Queue</h1>
+    <div class="stats" id="stats">Loading...</div>
+  </div>
+
+  <div class="filters">
+    <div class="filter-group">
+      <label>Client</label>
+      <select id="filterClient"><option value="">All clients</option></select>
+    </div>
+    <div class="filter-group">
+      <label>Priority</label>
+      <select id="filterPriority">
+        <option value="">All</option>
+        <option value="high">High</option>
+        <option value="medium">Medium</option>
+        <option value="low">Low</option>
+      </select>
+    </div>
+    <div class="filter-group">
+      <label>Flag</label>
+      <select id="filterFlag">
+        <option value="">All flags</option>
+        <option value="name_mismatch">Name mismatch</option>
+        <option value="classification_fallback">Classification fallback</option>
+        <option value="job_no_estimate">Job without estimate</option>
+        <option value="multiple_jobs">Multiple jobs</option>
+        <option value="multiple_estimates">Multiple estimates</option>
+        <option value="multiple_inspections">Multiple inspections</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="queue-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Priority</th>
+          <th>Client</th>
+          <th>Name</th>
+          <th>Phone</th>
+          <th>Flags</th>
+          <th>Insp</th>
+          <th>Est</th>
+          <th>Jobs</th>
+          <th>Job $</th>
+        </tr>
+      </thead>
+      <tbody id="queueBody"></tbody>
+    </table>
+    <div class="pagination">
+      <span id="pageInfo">-</span>
+      <div>
+        <button id="prevPage" disabled>&larr; Previous</button>
+        <button id="nextPage">Next &rarr;</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Detail slide-out panel -->
+  <div class="overlay" id="overlay"></div>
+  <div class="detail-panel" id="detailPanel">
+    <div class="panel-header">
+      <h2 id="detailTitle">Lead Detail</h2>
+      <button class="close-btn" id="closePanel">&times;</button>
+    </div>
+    <div class="reviewer-bar">
+      <label>Reviewer:</label>
+      <input type="text" id="reviewerName" placeholder="Your name" value="">
+    </div>
+    <div class="panel-body" id="detailBody">
+      <!-- Populated by JS -->
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    // ═══════════ State ═══════════
+    let currentPage = 0;
+    const PAGE_SIZE = 50;
+    let currentLead = null;
+
+    // ═══════════ Init ═══════════
+    async function init() {
+      // Load clients for filter
+      const clients = await fetch('/api/clients').then(r => r.json());
+      const sel = document.getElementById('filterClient');
+      clients.forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c.customer_id;
+        opt.textContent = c.name;
+        sel.appendChild(opt);
+      });
+
+      // Load saved reviewer name
+      document.getElementById('reviewerName').value = localStorage.getItem('reviewerName') || '';
+      document.getElementById('reviewerName').addEventListener('change', e => {
+        localStorage.setItem('reviewerName', e.target.value);
+      });
+
+      // Filter change handlers
+      ['filterClient', 'filterPriority', 'filterFlag'].forEach(id => {
+        document.getElementById(id).addEventListener('change', () => { currentPage = 0; loadQueue(); });
+      });
+
+      document.getElementById('prevPage').addEventListener('click', () => { currentPage--; loadQueue(); });
+      document.getElementById('nextPage').addEventListener('click', () => { currentPage++; loadQueue(); });
+      document.getElementById('closePanel').addEventListener('click', closeDetail);
+      document.getElementById('overlay').addEventListener('click', closeDetail);
+
+      loadQueue();
+
+      // Auto-open detail if ?open= param
+      const openParam = new URLSearchParams(window.location.search).get('open');
+      if (openParam) openDetail(openParam);
+    }
+
+    // ═══════════ Load Queue ═══════════
+    async function loadQueue() {
+      const params = new URLSearchParams({
+        limit: PAGE_SIZE,
+        offset: currentPage * PAGE_SIZE,
+      });
+      const client = document.getElementById('filterClient').value;
+      const priority = document.getElementById('filterPriority').value;
+      const flag = document.getElementById('filterFlag').value;
+      if (client) params.set('client', client);
+      if (priority) params.set('priority', priority);
+      if (flag) params.set('flag', flag);
+
+      const data = await fetch(`/api/queue?${params}`).then(r => r.json());
+      const totalPages = Math.ceil(data.total / PAGE_SIZE);
+
+      document.getElementById('stats').textContent = `${data.total} leads to review`;
+      document.getElementById('pageInfo').textContent = `Page ${currentPage + 1} of ${totalPages || 1} (${data.total} total)`;
+      document.getElementById('prevPage').disabled = currentPage === 0;
+      document.getElementById('nextPage').disabled = currentPage >= totalPages - 1;
+
+      const tbody = document.getElementById('queueBody');
+      tbody.innerHTML = data.items.map(item => `
+        <tr onclick="openDetail('${item.hcp_customer_id}')">
+          <td><span class="badge badge-${item.review_priority}">${item.review_priority}</span></td>
+          <td style="font-size:0.8rem">${item.client_name || ''}</td>
+          <td><strong>${item.first_name || ''} ${item.last_name || ''}</strong> ${hcpLink('customer', item.hcp_customer_id, '&#x2197;')}</td>
+          <td style="font-size:0.8rem">${item.phone_primary || '-'}</td>
+          <td>${(item.reviewable_flags || []).map(f => `<span class="flag flag-${f}">${f.replace(/_/g,' ')}</span>`).join('')}</td>
+          <td>${item.inspection_count}</td>
+          <td>${item.estimate_count}</td>
+          <td>${item.job_count}</td>
+          <td>${item.job_total_dollars ? '$' + Number(item.job_total_dollars).toLocaleString() : '-'}</td>
+        </tr>
+      `).join('');
+    }
+
+    // ═══════════ Open Detail ═══════════
+    async function openDetail(hcpCustomerId) {
+      const data = await fetch(`/api/lead/${hcpCustomerId}`).then(r => r.json());
+      currentLead = data;
+      const c = data.customer;
+      const cr = data.callrail;
+
+      document.getElementById('detailTitle').textContent = `${c.first_name || ''} ${c.last_name || ''}`;
+
+      let html = '';
+
+      // Customer info + CallRail match
+      html += `<div class="detail-section">
+        <h3>Customer Info ${hcpLink('customer', c.hcp_customer_id, 'View in HCP &#x2197;')}</h3>
+        <div class="detail-grid">
+          <div class="detail-item"><div class="label">Client</div><div class="value">${c.client_name}</div></div>
+          <div class="detail-item"><div class="label">Phone</div><div class="value">${c.phone_primary || '-'}</div></div>
+          <div class="detail-item"><div class="label">Email</div><div class="value">${c.email || '-'}</div></div>
+          <div class="detail-item"><div class="label">Match Method</div><div class="value">${c.match_method || 'none'}</div></div>
+          <div class="detail-item"><div class="label">HCP Lead Source</div><div class="value">${c.lead_source || '-'}</div></div>
+          <div class="detail-item"><div class="label">Review Status</div><div class="value">${c.review_status}</div></div>
+        </div>
+        ${c.notes ? `<div style="margin-top:0.5rem"><div class="label">Customer Notes</div><div class="notes-text">${escHtml(c.notes)}</div></div>` : ''}
+      </div>`;
+
+      // CallRail match comparison
+      if (cr) {
+        html += `<div class="detail-section">
+          <h3>CallRail Match</h3>
+          <div class="detail-grid">
+            <div class="detail-item"><div class="label">CallRail Name</div><div class="value">${cr.customer_name || '-'}</div></div>
+            <div class="detail-item"><div class="label">HCP Name</div><div class="value">${c.first_name} ${c.last_name}</div></div>
+            <div class="detail-item"><div class="label">CallRail Phone</div><div class="value">${cr.caller_phone || '-'}</div></div>
+            <div class="detail-item"><div class="label">Call Date</div><div class="value">${cr.start_time ? new Date(cr.start_time).toLocaleDateString() : '-'}</div></div>
+            <div class="detail-item"><div class="label">GCLID</div><div class="value">${cr.gclid ? 'Yes' : 'No'}</div></div>
+            <div class="detail-item"><div class="label">Source</div><div class="value">${cr.classified_source || cr.source || '-'}</div></div>
+          </div>
+        </div>`;
+      }
+
+      // Exception flags
+      html += `<div class="detail-section">
+        <h3>Flags</h3>
+        <div>${(c.exception_flags || []).map(f => `<span class="flag flag-${f}">${f.replace(/_/g,' ')}</span>`).join(' ')}</div>
+      </div>`;
+
+      // Inspections
+      if (data.inspections.length) {
+        html += `<div class="detail-section"><h3>Inspections (${data.inspections.length})</h3>
+          <table class="sub-table"><thead><tr><th></th><th>Date</th><th>Status</th><th>Amount</th><th>Description</th><th></th></tr></thead><tbody>
+          ${data.inspections.map(i => {
+            const dimmed = i.record_status !== 'active';
+            const statusLabel = i.record_status === 'excluded' ? ' <span class="badge badge-high">excluded</span>' : '';
+            return `<tr style="${dimmed ? 'opacity:0.5' : ''}">
+              <td>${hcpLink(i.source_event === 'estimate.scheduled' ? 'estimate' : 'job', i.hcp_id, '&#x2197;')}</td>
+              <td>${i.scheduled_at ? new Date(i.scheduled_at).toLocaleDateString() : '-'}</td>
+              <td>${stat(i.status)}${statusLabel}</td>
+              <td>$${((i.total_amount_cents || 0) / 100).toLocaleString()}</td>
+              <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(i.description || '')}">${escHtml((i.description || '').substring(0, 60))}</td>
+              <td>${i.record_status === 'active' ? `<button class="btn btn-dismiss" style="padding:0.2rem 0.4rem;font-size:0.7rem" onclick="doExclude('inspections','${i.hcp_id}')">Exclude</button>` : ''}</td>
+            </tr>`;
+          }).join('')}
+          </tbody></table></div>`;
+      }
+
+      // Estimates + options
+      if (data.estimates.length) {
+        const multiEst = data.estimates.filter(e => e.record_status === 'active').length > 1;
+        html += `<div class="detail-section"><h3>Estimates (${data.estimates.length})</h3>
+          <table class="sub-table"><thead><tr>${multiEst ? '<th title="Select main estimate">Main</th><th title="Check to make this an option">Opt</th>' : ''}<th></th><th>Sent</th><th>Status</th><th>Type</th><th>Highest Option</th><th>Employee</th><th></th></tr></thead><tbody>
+          ${data.estimates.map((e, idx) => {
+            const dimmed = e.record_status !== 'active';
+            const statusLabel = e.record_status === 'option' ? ' <span class="badge badge-info">option</span>' : e.record_status === 'excluded' ? ' <span class="badge badge-high">excluded</span>' : '';
+            return `<tr style="${dimmed ? 'opacity:0.5' : ''}">
+              ${multiEst ? `<td><input type="radio" name="est_main" value="${e.hcp_estimate_id}" ${!dimmed && idx===0 ? 'checked' : ''}></td><td>${!dimmed ? `<input type="checkbox" class="est_opt" value="${e.hcp_estimate_id}">` : ''}</td>` : ''}
+              <td>${hcpLink('estimate', e.hcp_estimate_id, '&#x2197;')}</td>
+              <td>${e.sent_at ? new Date(e.sent_at).toLocaleDateString() : '-'}</td>
+              <td>${stat(e.status)}${statusLabel}</td>
+              <td>${e.estimate_type || '-'}</td>
+              <td>$${((e.highest_option_cents || 0) / 100).toLocaleString()}</td>
+              <td>${e.employee_name || '-'}</td>
+              <td>${e.record_status === 'active' ? `<button class="btn btn-dismiss" style="padding:0.2rem 0.4rem;font-size:0.7rem" onclick="doExclude('estimates','${e.hcp_estimate_id}')">Exclude</button>` : ''}</td>
+            </tr>`;
+          }).join('')}
+          </tbody></table>
+          ${multiEst ? '<button class="btn btn-reclassify" onclick="doClassifyAsOptions()" style="margin-top:0.5rem">Make checked into Options under Main</button>' : ''}
+          </div>`;
+      }
+
+      // Jobs
+      if (data.jobs.length) {
+        const multiJob = data.jobs.filter(j => j.record_status === 'active').length > 1;
+        html += `<div class="detail-section"><h3>Jobs (${data.jobs.length})</h3>
+          <table class="sub-table"><thead><tr>${multiJob ? '<th title="Select main job">Main</th><th title="Check to make this a segment">Seg</th>' : ''}<th></th><th>Date</th><th>Status</th><th>Amount</th><th>Description</th><th></th></tr></thead><tbody>
+          ${data.jobs.map((j, idx) => {
+            const dimmed = j.record_status !== 'active';
+            const statusLabel = j.record_status === 'segment' ? ' <span class="badge badge-info">segment</span>' : j.record_status === 'excluded' ? ' <span class="badge badge-high">excluded</span>' : '';
+            return `<tr style="${dimmed ? 'opacity:0.5' : ''}">
+              ${multiJob ? `<td><input type="radio" name="job_main" value="${j.hcp_job_id}" ${!dimmed && idx===0 ? 'checked' : ''}></td><td>${!dimmed ? `<input type="checkbox" class="job_seg" value="${j.hcp_job_id}">` : ''}</td>` : ''}
+              <td>${hcpLink('job', j.hcp_job_id, '&#x2197;')}</td>
+              <td>${j.scheduled_at ? new Date(j.scheduled_at).toLocaleDateString() : '-'}</td>
+              <td>${stat(j.status)}${statusLabel}</td>
+              <td>$${((j.total_amount_cents || 0) / 100).toLocaleString()}</td>
+              <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(j.description || '')}">${escHtml((j.description || '').substring(0, 60))}</td>
+              <td>${j.record_status === 'active' ? `<button class="btn btn-dismiss" style="padding:0.2rem 0.4rem;font-size:0.7rem" onclick="doExclude('jobs','${j.hcp_job_id}')">Exclude</button>` : ''}</td>
+            </tr>`;
+          }).join('')}
+          </tbody></table>
+          ${multiJob ? '<button class="btn btn-reclassify" onclick="doClassifyAsSegments()" style="margin-top:0.5rem">Make checked into Segments under Main</button>' : ''}
+          </div>`;
+      }
+
+      // Invoices
+      if (data.invoices.length) {
+        html += `<div class="detail-section"><h3>Invoices (${data.invoices.length})</h3>
+          <table class="sub-table"><thead><tr><th>#</th><th>Date</th><th>Status</th><th>Amount</th><th>Paid</th></tr></thead><tbody>
+          ${data.invoices.map(inv => `<tr>
+            <td>${inv.invoice_number || '-'}</td>
+            <td>${inv.invoice_date ? new Date(inv.invoice_date).toLocaleDateString() : '-'}</td>
+            <td>${inv.status}</td>
+            <td>$${((inv.amount_cents || 0) / 100).toLocaleString()}</td>
+            <td>${inv.paid_at ? new Date(inv.paid_at).toLocaleDateString() : '-'}</td>
+          </tr>`).join('')}
+          </tbody></table></div>`;
+      }
+
+      // Audit log
+      if (data.reviews.length) {
+        html += `<div class="detail-section"><h3>Review History</h3>
+          ${data.reviews.map(r => `<div class="audit-entry">
+            <span class="audit-action">${r.action}</span> by ${r.performed_by}
+            ${r.reason ? ` — ${r.reason}` : ''}${r.notes ? ` (${r.notes})` : ''}
+            <div class="audit-meta">${new Date(r.performed_at).toLocaleString()}</div>
+          </div>`).join('')}
+        </div>`;
+      }
+
+      // Action buttons
+      html += `<div class="detail-section">
+        <h3>Actions</h3>
+        <textarea class="note-input" id="actionNotes" placeholder="Notes / reason (optional)"></textarea>
+        <div class="actions">
+          ${c.exception_flags?.includes('name_mismatch') ? `
+            <button class="btn btn-confirm" onclick="doAction('confirm-match')">Confirm Match</button>
+            <button class="btn btn-reject" onclick="doAction('reject-match')">Reject Match</button>
+          ` : ''}
+          ${c.exception_flags?.includes('classification_fallback') ? `
+            <button class="btn btn-reclassify" onclick="doReclassify()">Reclassify</button>
+          ` : ''}
+          <button class="btn btn-override" onclick="doOverride('google_ads')">Override → Google Ads</button>
+          <button class="btn btn-override" onclick="doOverride('not_google_ads')">Override → Not Google Ads</button>
+          ${(c.exception_flags || []).filter(f => ['job_no_estimate','multiple_jobs','multiple_estimates','multiple_inspections'].includes(f)).map(f =>
+            `<button class="btn btn-dismiss" onclick="doDismiss('${f}')">Dismiss: ${f.replace(/_/g,' ')}</button>`
+          ).join('')}
+        </div>
+      </div>`;
+
+      document.getElementById('detailBody').innerHTML = html;
+      document.getElementById('detailPanel').classList.add('open');
+      document.getElementById('overlay').classList.add('show');
+    }
+
+    function closeDetail() {
+      document.getElementById('detailPanel').classList.remove('open');
+      document.getElementById('overlay').classList.remove('show');
+      currentLead = null;
+    }
+
+    // ═══════════ Actions ═══════════
+    function getReviewer() {
+      const name = document.getElementById('reviewerName').value.trim();
+      if (!name) { alert('Please enter your name in the Reviewer field'); return null; }
+      return name;
+    }
+
+    async function doAction(action) {
+      const reviewer = getReviewer();
+      if (!reviewer) return;
+      const notes = document.getElementById('actionNotes').value.trim();
+      const id = currentLead.customer.hcp_customer_id;
+
+      const body = { hcp_customer_id: id, performed_by: reviewer };
+      if (action === 'confirm-match') body.notes = notes;
+      if (action === 'reject-match') body.reason = notes;
+
+      const res = await fetch(`/api/review/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }).then(r => r.json());
+
+      if (res.success) {
+        showToast(`${action.replace(/-/g,' ')} — done`);
+        closeDetail();
+        loadQueue();
+      } else {
+        showToast(`Error: ${res.error}`, true);
+      }
+    }
+
+    async function doOverride(overrideTo) {
+      const reviewer = getReviewer();
+      if (!reviewer) return;
+      const reason = document.getElementById('actionNotes').value.trim();
+      const id = currentLead.customer.hcp_customer_id;
+
+      const res = await fetch('/api/review/override-attribution', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hcp_customer_id: id, performed_by: reviewer, override_to: overrideTo, reason }),
+      }).then(r => r.json());
+
+      if (res.success) {
+        showToast(`Attribution overridden to ${overrideTo}`);
+        closeDetail();
+        loadQueue();
+      } else {
+        showToast(`Error: ${res.error}`, true);
+      }
+    }
+
+    async function doDismiss(flag) {
+      const reviewer = getReviewer();
+      if (!reviewer) return;
+      const reason = document.getElementById('actionNotes').value.trim();
+      const id = currentLead.customer.hcp_customer_id;
+
+      const res = await fetch('/api/review/dismiss-fragmentation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hcp_customer_id: id, performed_by: reviewer, flag, notes: reason }),
+      }).then(r => r.json());
+
+      if (res.success) {
+        showToast(`Dismissed: ${flag.replace(/_/g,' ')}`);
+        closeDetail();
+        loadQueue();
+      } else {
+        showToast(`Error: ${res.error}`, true);
+      }
+    }
+
+    async function doClassifyAsOptions() {
+      const reviewer = getReviewer();
+      if (!reviewer) return;
+      const notes = document.getElementById('actionNotes').value.trim();
+      const mainEl = document.querySelector('input[name="est_main"]:checked');
+      if (!mainEl) { alert('Select a main estimate'); return; }
+      const mainId = mainEl.value;
+
+      // Get checked checkboxes (excluding the main)
+      const checkedIds = Array.from(document.querySelectorAll('.est_opt:checked'))
+        .map(el => el.value)
+        .filter(id => id !== mainId);
+
+      if (!checkedIds.length) { alert('Check the estimates you want to make into options'); return; }
+
+      const res = await fetch('/api/review/estimates-as-options', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ main_id: mainId, option_ids: checkedIds, performed_by: reviewer, notes }),
+      }).then(r => r.json());
+
+      if (res.success) {
+        showToast(`${checkedIds.length} estimate(s) reclassified as options`);
+        openDetail(currentLead.customer.hcp_customer_id);
+      } else { showToast(`Error: ${res.error}`, true); }
+    }
+
+    async function doClassifyAsSegments() {
+      const reviewer = getReviewer();
+      if (!reviewer) return;
+      const notes = document.getElementById('actionNotes').value.trim();
+      const mainEl = document.querySelector('input[name="job_main"]:checked');
+      if (!mainEl) { alert('Select a main job'); return; }
+      const mainId = mainEl.value;
+
+      // Get checked checkboxes (excluding the main)
+      const checkedIds = Array.from(document.querySelectorAll('.job_seg:checked'))
+        .map(el => el.value)
+        .filter(id => id !== mainId);
+
+      if (!checkedIds.length) { alert('Check the jobs you want to make into segments'); return; }
+
+      const res = await fetch('/api/review/jobs-as-segments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ main_id: mainId, segment_ids: checkedIds, performed_by: reviewer, notes }),
+      }).then(r => r.json());
+
+      if (res.success) {
+        showToast(`${checkedIds.length} job(s) reclassified as segments`);
+        openDetail(currentLead.customer.hcp_customer_id);
+      } else { showToast(`Error: ${res.error}`, true); }
+    }
+
+    async function doExclude(table, recordId) {
+      const reviewer = getReviewer();
+      if (!reviewer) return;
+      if (!confirm(`Exclude this ${table.slice(0,-1)} from all metrics?`)) return;
+      const reason = document.getElementById('actionNotes').value.trim() || 'Excluded via review';
+
+      const res = await fetch('/api/review/exclude-record', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table, record_id: recordId, performed_by: reviewer, reason }),
+      }).then(r => r.json());
+
+      if (res.success) {
+        showToast(`Record excluded`);
+        openDetail(currentLead.customer.hcp_customer_id);
+      } else { showToast(`Error: ${res.error}`, true); }
+    }
+
+    async function doReclassify() {
+      // Simple prompt for now
+      const direction = prompt('Reclassify to:\n1 = inspection\n2 = job\n\nEnter 1 or 2:');
+      if (!direction) return;
+      const reviewer = getReviewer();
+      if (!reviewer) return;
+      const reason = document.getElementById('actionNotes').value.trim();
+
+      if (direction === '1' && currentLead.jobs.length) {
+        const jobId = currentLead.jobs[0].hcp_job_id;
+        const res = await fetch('/api/review/reclassify-to-inspection', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hcp_job_id: jobId, performed_by: reviewer, reason }),
+        }).then(r => r.json());
+        if (res.success) { showToast('Reclassified to inspection'); closeDetail(); loadQueue(); }
+        else showToast(`Error: ${res.error}`, true);
+      } else if (direction === '2' && currentLead.inspections.length) {
+        const inspId = currentLead.inspections[0].hcp_id;
+        const res = await fetch('/api/review/reclassify-to-job', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hcp_inspection_id: inspId, performed_by: reviewer, reason }),
+        }).then(r => r.json());
+        if (res.success) { showToast('Reclassified to job'); closeDetail(); loadQueue(); }
+        else showToast(`Error: ${res.error}`, true);
+      } else {
+        alert('No records to reclassify');
+      }
+    }
+
+    // ═══════════ Helpers ═══════════
+    const HCP_BASE = 'https://pro.housecallpro.com/pro';
+    const STATUS_MAP = {
+      'scheduled': { label: 'Scheduled', color: '#3b82f6' },
+      'in progress': { label: 'In Progress', color: '#d97706' },
+      'complete unrated': { label: 'Completed', color: '#16a34a' },
+      'complete rated': { label: 'Completed', color: '#16a34a' },
+      'user canceled': { label: 'Canceled', color: '#dc2626' },
+      'pro canceled': { label: 'Canceled', color: '#dc2626' },
+      'needs scheduling': { label: 'Needs Scheduling', color: '#64748b' },
+      'created job from estimate': { label: 'Job Created', color: '#16a34a' },
+      'sent': { label: 'Sent', color: '#3b82f6' },
+      'approved': { label: 'Approved', color: '#16a34a' },
+      'open': { label: 'Open', color: '#d97706' },
+      'paid': { label: 'Paid', color: '#16a34a' },
+      'canceled': { label: 'Canceled', color: '#dc2626' },
+      'declined': { label: 'Declined', color: '#dc2626' },
+    };
+    function stat(s) {
+      const m = STATUS_MAP[(s||'').toLowerCase()] || { label: s || '-', color: '#64748b' };
+      return `<span style="display:inline-block;padding:0.1rem 0.35rem;border-radius:3px;font-size:0.65rem;font-weight:500;background:${m.color}18;color:${m.color}">${m.label}</span>`;
+    }
+    function hcpLink(type, id, label) {
+      if (!id) return label || '-';
+      const paths = { customer: 'customers', job: 'jobs', estimate: 'estimates', invoice: 'invoices' };
+      const url = `${HCP_BASE}/${paths[type] || type}/${id}`;
+      return `<a href="${url}" target="_blank" rel="noopener" style="color:#3b82f6;text-decoration:none" title="Open in HCP" onclick="event.stopPropagation()">${label || id}</a>`;
+    }
+
+    function escHtml(str) {
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function showToast(msg, isError) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.style.background = isError ? '#dc2626' : '#1e293b';
+      el.classList.add('show');
+      setTimeout(() => el.classList.remove('show'), 3000);
+    }
+
+    init();
+  </script>
+</body>
+</html>

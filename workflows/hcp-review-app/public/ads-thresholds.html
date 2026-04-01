@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ads Manager Risk Thresholds — Blueprint for Scale</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #F5F1E8; color: #000; padding: 2rem; }
+    .page { max-width: 960px; margin: 0 auto; }
+    .header { text-align: center; margin-bottom: 2.5rem; }
+    .header h1 { font-size: 1.6rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 0.3rem; }
+    .header p { font-size: 0.85rem; color: #888; }
+    .legend { display: flex; justify-content: center; gap: 2rem; margin-bottom: 2rem; font-size: 0.75rem; font-weight: 600; color: #666; }
+    .legend-item { display: flex; align-items: center; gap: 0.4rem; }
+    .legend-dot { width: 12px; height: 12px; border-radius: 3px; }
+    .dot-early { background: #3b82f6; }
+    .dot-flag { background: #f59e0b; }
+    .dot-risk { background: #E85D4D; }
+    .dot-safe { background: #22c55e; }
+    .metric-section { margin-bottom: 2rem; }
+    .metric-header { display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem 1rem; background: #000; color: #F5F1E8; border-radius: 8px 8px 0 0; }
+    .metric-header h2 { font-size: 0.85rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
+    .metric-header .metric-icon { font-size: 1rem; }
+    .metric-header .lookback { margin-left: auto; font-size: 0.65rem; font-weight: 500; color: rgba(245,241,232,0.5); letter-spacing: 0.03em; }
+    .threshold-row { display: flex; align-items: stretch; border-bottom: 1px solid #eee; background: #fff; }
+    .threshold-row:last-child { border-bottom: none; border-radius: 0 0 8px 8px; }
+    .threshold-level { width: 8px; flex-shrink: 0; }
+    .level-risk { background: #E85D4D; }
+    .level-flag { background: #f59e0b; }
+    .level-early { background: #3b82f6; }
+    .level-safe { background: #22c55e; }
+    .threshold-content { flex: 1; display: flex; align-items: center; padding: 0.85rem 1.25rem; gap: 1rem; }
+    .threshold-value { font-size: 1.15rem; font-weight: 800; min-width: 155px; }
+    .threshold-value.red { color: #E85D4D; }
+    .threshold-value.amber { color: #d97706; }
+    .threshold-value.blue { color: #2563eb; }
+    .threshold-value.green { color: #16a34a; }
+    .threshold-detail { flex: 1; }
+    .threshold-label { font-size: 0.82rem; font-weight: 600; color: #333; }
+    .threshold-note { font-size: 0.7rem; color: #999; margin-top: 0.1rem; }
+    .threshold-when { font-size: 0.68rem; font-weight: 600; color: #aaa; text-transform: uppercase; letter-spacing: 0.04em; min-width: 90px; text-align: right; }
+    .protection { background: #f0fdf4; border: 2px solid #22c55e; border-radius: 10px; padding: 1.25rem 1.5rem; display: flex; align-items: center; gap: 1rem; margin: 2rem 0; }
+    .protection-icon { font-size: 1.5rem; flex-shrink: 0; }
+    .protection h3 { font-size: 0.9rem; font-weight: 700; color: #16a34a; margin-bottom: 0.2rem; }
+    .protection p { font-size: 0.78rem; color: #555; line-height: 1.4; }
+    .section-divider { display: flex; align-items: center; gap: 1rem; margin: 2.5rem 0 1.5rem; }
+    .section-divider-line { flex: 1; height: 1px; background: #d4d0c8; }
+    .section-divider-label { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #bbb; white-space: nowrap; }
+    .metric-section.funnel { opacity: 0.55; }
+    .metric-section.funnel .metric-header { background: #666; }
+    .metric-section.funnel:hover { opacity: 0.85; transition: opacity 0.2s; }
+    /* Toggle */
+    .toggle-bar { display: flex; justify-content: center; gap: 0; margin-bottom: 2rem; }
+    .toggle-btn {
+      padding: 0.65rem 2rem; font-size: 0.85rem; font-weight: 700; border: 2px solid #000;
+      background: #fff; color: #000; cursor: pointer; transition: all 0.15s;
+    }
+    .toggle-btn:first-child { border-radius: 8px 0 0 8px; }
+    .toggle-btn:last-child { border-radius: 0 8px 8px 0; }
+    .toggle-btn.active { background: #000; color: #F5F1E8; }
+    .toggle-btn:hover:not(.active) { background: #f0eee8; }
+
+    /* Show/hide rows based on toggle */
+    .threshold-row[data-stage="early"] { display: none; }
+    .threshold-row[data-stage="established"] { display: none; }
+    body.show-new .threshold-row[data-stage="early"] { display: flex; }
+    body.show-new .threshold-row[data-stage="established"] { display: none; }
+    body.show-new .threshold-row[data-stage="both"] { display: flex; }
+    body.show-established .threshold-row[data-stage="established"] { display: flex; }
+    body.show-established .threshold-row[data-stage="early"] { display: none; }
+    body.show-established .threshold-row[data-stage="both"] { display: flex; }
+    body.show-all .threshold-row[data-stage] { display: flex; }
+
+    .footer { text-align: center; padding: 2rem; font-size: 0.7rem; color: #bbb; }
+    @media print { body { padding: 0.5rem; } .metric-section { break-inside: avoid; } .toggle-bar { display: none; } }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <div class="header">
+    <h1>Ads Manager Risk Thresholds</h1>
+    <p>Blueprint for Scale — Quick Reference Guide</p>
+  </div>
+
+  <div class="toggle-bar">
+    <button class="toggle-btn" onclick="setView('new')">New Accounts (Mo 1-2)</button>
+    <button class="toggle-btn active" onclick="setView('established')">Established (Mo 3+)</button>
+  </div>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot dot-early"></div> Early Stage (Mo 1-2)</div>
+    <div class="legend-item"><div class="legend-dot dot-flag"></div> Flag (3+ = warning)</div>
+    <div class="legend-item"><div class="legend-dot dot-risk"></div> Risk (immediate action)</div>
+    <div class="legend-item"><div class="legend-dot dot-safe"></div> Healthy Target</div>
+  </div>
+
+  <!-- LEAD COUNT -->
+  <div class="metric-section">
+    <div class="metric-header"><span class="metric-icon">👥</span><h2>Lead Count</h2><span class="lookback">30-day window</span></div>
+    <div class="threshold-row" data-stage="early"><div class="threshold-level level-early"></div><div class="threshold-content"><div class="threshold-value blue">0 leads (Mo 1) / &le; 10 (Mo 2)</div><div class="threshold-detail"><div class="threshold-label">Very low early-stage lead count</div><div class="threshold-note">Ads may not be running or targeting needs work</div></div><div class="threshold-when">Months 1-2</div></div></div>
+    <div class="threshold-row" data-stage="established"><div class="threshold-level level-flag"></div><div class="threshold-content"><div class="threshold-value amber">11 - 19 leads</div><div class="threshold-detail"><div class="threshold-label">Warning range</div><div class="threshold-note">Flag trigger</div></div><div class="threshold-when">Months 3-5</div></div></div>
+    <div class="threshold-row" data-stage="established"><div class="threshold-level level-flag"></div><div class="threshold-content"><div class="threshold-value amber">20 - 29 leads</div><div class="threshold-detail"><div class="threshold-label">Warning range (if ROAS/guarantee OK)</div><div class="threshold-note">Flag trigger</div></div><div class="threshold-when">Month 6+</div></div></div>
+    <div class="threshold-row" data-stage="established"><div class="threshold-level level-risk"></div><div class="threshold-content"><div class="threshold-value red">&le; 10 leads</div><div class="threshold-detail"><div class="threshold-label">Critical — too few leads</div><div class="threshold-note">Risk trigger</div></div><div class="threshold-when">Months 3-5</div></div></div>
+    <div class="threshold-row" data-stage="established"><div class="threshold-level level-risk"></div><div class="threshold-content"><div class="threshold-value red">&lt; 20 leads</div><div class="threshold-detail"><div class="threshold-label">Critical with budget &ge; $3K</div><div class="threshold-note">Risk trigger — clients with budget &lt; $3K are exempt. Overridden to flag if ROAS &ge; 3x.</div></div><div class="threshold-when">Month 6+</div></div></div>
+    <div class="threshold-row" data-stage="both"><div class="threshold-level level-safe"></div><div class="threshold-content"><div class="threshold-value green">30+ leads</div><div class="threshold-detail"><div class="threshold-label">Healthy lead volume</div><div class="threshold-note">Target for mature accounts. Clients with budget &lt; $3K are exempt from low-lead risk triggers.</div></div><div class="threshold-when">Target</div></div></div>
+  </div>
+
+  <!-- CPL -->
+  <div class="metric-section">
+    <div class="metric-header"><span class="metric-icon">💰</span><h2>Cost Per Lead</h2><span class="lookback">30-day window</span></div>
+    <div class="threshold-row" data-stage="early"><div class="threshold-level level-early"></div><div class="threshold-content"><div class="threshold-value blue">&gt; $400</div><div class="threshold-detail"><div class="threshold-label">Early stage CPL flag</div><div class="threshold-note">Higher threshold while optimizing</div></div><div class="threshold-when">Month 2</div></div></div>
+    <div class="threshold-row" data-stage="established"><div class="threshold-level level-flag"></div><div class="threshold-content"><div class="threshold-value amber">&lt; $40 or $140 - $170</div><div class="threshold-detail"><div class="threshold-label">Warning range — too low (spam/tracking issue) or getting expensive</div><div class="threshold-note">Flag trigger</div></div><div class="threshold-when">Month 3+</div></div></div>
+    <div class="threshold-row" data-stage="established"><div class="threshold-level level-risk"></div><div class="threshold-content"><div class="threshold-value red">&gt; $170</div><div class="threshold-detail"><div class="threshold-label">Too expensive — risk trigger</div><div class="threshold-note">Review targeting and bid strategy. Overridden to flag if ROAS &ge; 3x.</div></div><div class="threshold-when">Month 3+</div></div></div>
+    <div class="threshold-row" data-stage="both"><div class="threshold-level level-safe"></div><div class="threshold-content"><div class="threshold-value green">$40 - $140</div><div class="threshold-detail"><div class="threshold-label">Healthy CPL range</div><div class="threshold-note">Sweet spot for mold remediation leads</div></div><div class="threshold-when">Target</div></div></div>
+  </div>
+
+  <!-- BUDGET -->
+  <div class="metric-section">
+    <div class="metric-header"><span class="metric-icon">🎯</span><h2>Budget &amp; Spend</h2><span class="lookback">30-day window</span></div>
+    <div class="threshold-row" data-stage="early"><div class="threshold-level level-early"></div><div class="threshold-content"><div class="threshold-value blue">&lt; $1K or &lt; 50% of budget</div><div class="threshold-detail"><div class="threshold-label">Early underspend — not enough to optimize or hit targets</div><div class="threshold-note">Flag in months 1-2</div></div><div class="threshold-when">Months 1-2</div></div></div>
+    <div class="threshold-row" data-stage="established"><div class="threshold-level level-flag"></div><div class="threshold-content"><div class="threshold-value amber">110 - 124%</div><div class="threshold-detail"><div class="threshold-label">Moderate overspend</div><div class="threshold-note">Flag trigger</div></div><div class="threshold-when">Month 3+</div></div></div>
+    <div class="threshold-row" data-stage="both"><div class="threshold-level level-risk"></div><div class="threshold-content"><div class="threshold-value red">$0 Spend or &gt; 124%</div><div class="threshold-detail"><div class="threshold-label">Ads not running, or significant overspend</div><div class="threshold-note">Risk trigger — check campaign status and budgets immediately</div></div><div class="threshold-when">Any</div></div></div>
+    <div class="threshold-row" data-stage="both"><div class="threshold-level level-safe"></div><div class="threshold-content"><div class="threshold-value green">90 - 110% of budget</div><div class="threshold-detail"><div class="threshold-label">Healthy — on track with budget</div><div class="threshold-note">Within 10% of target</div></div><div class="threshold-when">Target</div></div></div>
+  </div>
+
+  <!-- LEAD RECENCY -->
+  <div class="metric-section">
+    <div class="metric-header"><span class="metric-icon">⏱</span><h2>Lead Recency</h2><span class="lookback">Days since last lead</span></div>
+    <div class="threshold-row" data-stage="early"><div class="threshold-level level-early"></div><div class="threshold-content"><div class="threshold-value blue">&ge; 14 days</div><div class="threshold-detail"><div class="threshold-label">Early stage — longer threshold</div><div class="threshold-note">New campaigns take time to ramp</div></div><div class="threshold-when">Month 2</div></div></div>
+    <div class="threshold-row" data-stage="established"><div class="threshold-level level-flag"></div><div class="threshold-content"><div class="threshold-value amber">4 - 6 days</div><div class="threshold-detail"><div class="threshold-label">Getting stale — no new leads recently</div><div class="threshold-note">Flag trigger</div></div><div class="threshold-when">Month 3+</div></div></div>
+    <div class="threshold-row" data-stage="established"><div class="threshold-level level-risk"></div><div class="threshold-content"><div class="threshold-value red">&ge; 7 days</div><div class="threshold-detail"><div class="threshold-label">No leads in a week — ads may have stalled</div><div class="threshold-note">Risk trigger — check campaigns immediately</div></div><div class="threshold-when">Month 3+</div></div></div>
+    <div class="threshold-row" data-stage="both"><div class="threshold-level level-safe"></div><div class="threshold-content"><div class="threshold-value green">&le; 3 days</div><div class="threshold-detail"><div class="threshold-label">Healthy — fresh leads coming in consistently</div><div class="threshold-note">Ads are running well</div></div><div class="threshold-when">Target</div></div></div>
+  </div>
+
+  <!-- LEAD VOLUME -->
+  <div class="metric-section">
+    <div class="metric-header"><span class="metric-icon">📊</span><h2>Lead Volume Change</h2><span class="lookback">30 days vs prior 30 days</span></div>
+    <div class="threshold-row" data-stage="established"><div class="threshold-level level-flag"></div><div class="threshold-content"><div class="threshold-value amber">10 - 30% Drop</div><div class="threshold-detail"><div class="threshold-label">Moderate decline — trending down</div><div class="threshold-note">Flag trigger</div></div><div class="threshold-when">Month 3+</div></div></div>
+    <div class="threshold-row" data-stage="established"><div class="threshold-level level-risk"></div><div class="threshold-content"><div class="threshold-value red">&gt; 30% Drop</div><div class="threshold-detail"><div class="threshold-label">Significant decline vs prior 30 days</div><div class="threshold-note">Risk trigger — something changed</div></div><div class="threshold-when">Month 3+</div></div></div>
+    <div class="threshold-row" data-stage="both"><div class="threshold-level level-safe"></div><div class="threshold-content"><div class="threshold-value green">Stable or growing</div><div class="threshold-detail"><div class="threshold-label">Healthy — lead volume holding steady or increasing</div><div class="threshold-note">Consistent month-over-month performance</div></div><div class="threshold-when">Target</div></div></div>
+  </div>
+
+  <!-- DIVIDER -->
+  <div class="section-divider">
+    <div class="section-divider-line"></div>
+    <div class="section-divider-label">Funnel Metrics (Client-Controlled)</div>
+    <div class="section-divider-line"></div>
+  </div>
+
+  <!-- BOOK RATE -->
+  <div class="metric-section funnel">
+    <div class="metric-header"><span class="metric-icon">📅</span><h2>Inspection Book Rate</h2><span class="lookback">30-day window</span></div>
+    <div class="threshold-row" data-stage="early"><div class="threshold-level level-early"></div><div class="threshold-content"><div class="threshold-value blue">&lt; 20%</div><div class="threshold-detail"><div class="threshold-label">Early stage book rate flag</div></div><div class="threshold-when">Month 2</div></div></div>
+    <div class="threshold-row" data-stage="established"><div class="threshold-level level-flag"></div><div class="threshold-content"><div class="threshold-value amber">15-28% (Free) / 11-19% (Paid)</div><div class="threshold-detail"><div class="threshold-label">Warning range — below target</div><div class="threshold-note">Flag trigger</div></div><div class="threshold-when">Month 3+</div></div></div>
+    <div class="threshold-row" data-stage="established"><div class="threshold-level level-risk"></div><div class="threshold-content"><div class="threshold-value red">&lt; 15% (Free) / &lt; 11% (Paid)</div><div class="threshold-detail"><div class="threshold-label">Client not converting leads to inspections</div><div class="threshold-note">Funnel risk — client follow-up issue, not ads</div></div><div class="threshold-when">Month 3+</div></div></div>
+    <div class="threshold-row" data-stage="both"><div class="threshold-level level-safe"></div><div class="threshold-content"><div class="threshold-value green">&ge; 28% (Free) / &ge; 20% (Paid)</div><div class="threshold-detail"><div class="threshold-label">Healthy — client is booking leads consistently</div></div><div class="threshold-when">Target</div></div></div>
+  </div>
+
+  <!-- ON CALENDAR -->
+  <div class="metric-section funnel">
+    <div class="metric-header"><span class="metric-icon">🗓</span><h2>On Calendar</h2><span class="lookback">Next 14 days</span></div>
+    <div class="threshold-row" data-stage="established"><div class="threshold-level level-flag"></div><div class="threshold-content"><div class="threshold-value amber">1 inspection</div><div class="threshold-detail"><div class="threshold-label">Very light calendar</div><div class="threshold-note">Flag trigger</div></div><div class="threshold-when">Month 3+</div></div></div>
+    <div class="threshold-row" data-stage="established"><div class="threshold-level level-risk"></div><div class="threshold-content"><div class="threshold-value red">0 inspections</div><div class="threshold-detail"><div class="threshold-label">Nothing scheduled — pipeline is empty</div><div class="threshold-note">Funnel risk</div></div><div class="threshold-when">Month 3+</div></div></div>
+    <div class="threshold-row" data-stage="both"><div class="threshold-level level-safe"></div><div class="threshold-content"><div class="threshold-value green">2+ inspections</div><div class="threshold-detail"><div class="threshold-label">Healthy — pipeline has upcoming work</div></div><div class="threshold-when">Target</div></div></div>
+  </div>
+
+  <!-- CALL ANSWER RATE -->
+  <div class="metric-section funnel">
+    <div class="metric-header"><span class="metric-icon">📞</span><h2>Call Answer Rate</h2><span class="lookback">Business hours, 30-day window</span></div>
+    <div class="threshold-row" data-stage="established"><div class="threshold-level level-risk"></div><div class="threshold-content"><div class="threshold-value red">&lt; 60%</div><div class="threshold-detail"><div class="threshold-label">Client missing too many calls</div><div class="threshold-note">Funnel risk — leads are calling but not getting through</div></div><div class="threshold-when">Month 3+</div></div></div>
+    <div class="threshold-row" data-stage="both"><div class="threshold-level level-safe"></div><div class="threshold-content"><div class="threshold-value green">&ge; 80%</div><div class="threshold-detail"><div class="threshold-label">Healthy — client answering most calls</div></div><div class="threshold-when">Target</div></div></div>
+  </div>
+
+  <!-- ROAS / GUARANTEE -->
+  <div class="metric-section funnel">
+    <div class="metric-header"><span class="metric-icon">📈</span><h2>ROAS &amp; Guarantee</h2><span class="lookback">ROAS: 30-day / Guarantee: all-time</span></div>
+    <div class="threshold-row" data-stage="established"><div class="threshold-level level-flag"></div><div class="threshold-content"><div class="threshold-value amber">60 - 100% ROAS</div><div class="threshold-detail"><div class="threshold-label">Below breakeven — watch zone</div><div class="threshold-note">Flag trigger — driven by client's sales pipeline</div></div><div class="threshold-when">Month 3+</div></div></div>
+    <div class="threshold-row" data-stage="established"><div class="threshold-level level-risk"></div><div class="threshold-content"><div class="threshold-value red">&lt; 60% ROAS</div><div class="threshold-detail"><div class="threshold-label">Low return on ad spend</div><div class="threshold-note">Only triggers if guarantee &lt; 1.5x</div></div><div class="threshold-when">Month 3+</div></div></div>
+    <div class="threshold-row" data-stage="both"><div class="threshold-level level-safe"></div><div class="threshold-content"><div class="threshold-value green">&ge; 100% ROAS / 2x+ Guarantee</div><div class="threshold-detail"><div class="threshold-label">Healthy — revenue exceeds ad spend</div><div class="threshold-note">At 1.5x+ guarantee, ROAS risk triggers are suppressed (proven long-term ROI)</div></div><div class="threshold-when">Target</div></div></div>
+  </div>
+
+  <!-- PROTECTION -->
+  <div class="protection">
+    <div class="protection-icon">🛡</div>
+    <div>
+      <h3>Guarantee Protection Rule</h3>
+      <p>If all-time guarantee &ge; 1.5x (total revenue / total spend), the ROAS-based ads risk triggers are suppressed. A bad 30-day period doesn't override proven long-term performance. The ads are working — the funnel may need attention instead.</p>
+    </div>
+  </div>
+
+  <div class="footer">Blueprint for Scale — Ads Manager Reference — Updated March 2026</div>
+
+</div>
+</body>
+</html>
+<script>
+function setView(view) {
+  document.body.className = view === 'new' ? 'show-new' : 'show-established';
+  document.querySelectorAll('.toggle-btn').forEach(function(btn) { btn.classList.remove('active'); });
+  event.target.classList.add('active');
+}
+document.body.className = 'show-established';
+</script>

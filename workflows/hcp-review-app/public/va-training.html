@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VA Training — Lead Review</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #ebe7de; color: #1a1a1a; line-height: 1.6; }
+
+    .header { background: #000; color: #F5F1E8; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+    .header h1 { font-size: 16px; font-weight: 800; letter-spacing: 1px; }
+    .header .brand { font-size: 10px; color: #8a8279; letter-spacing: 1.5px; }
+    .header a { color: #8a8279; font-size: 12px; text-decoration: none; }
+    .header a:hover { color: #F5F1E8; }
+
+    .content { max-width: 800px; margin: 0 auto; padding: 32px 24px 80px; }
+    h2 { font-size: 22px; font-weight: 800; margin: 40px 0 16px; padding-bottom: 8px; border-bottom: 2px solid #000; }
+    h2:first-of-type { margin-top: 0; }
+    h3 { font-size: 16px; font-weight: 700; margin: 28px 0 10px; color: #333; }
+    p { margin-bottom: 12px; font-size: 15px; }
+    ul, ol { margin: 0 0 16px 24px; font-size: 15px; }
+    li { margin-bottom: 6px; }
+    strong { font-weight: 700; }
+
+    .intro { background: #F5F1E8; border-radius: 12px; padding: 24px; margin-bottom: 32px; border: 1px solid #ddd8cb; }
+    .intro h2 { border: none; margin: 0 0 8px; font-size: 18px; }
+    .intro p { margin-bottom: 0; color: #5a554d; }
+
+    .callout { border-radius: 10px; padding: 16px 20px; margin: 16px 0; }
+    .callout-green { background: #e6f3ec; border: 1px solid #b4d6c4; }
+    .callout-red { background: #fef2f2; border: 1px solid #fecaca; }
+    .callout-blue { background: #eff6ff; border: 1px solid #bfdbfe; }
+    .callout-amber { background: #fef9e6; border: 1px solid #fde68a; }
+    .callout h4 { font-size: 14px; font-weight: 700; margin-bottom: 6px; }
+    .callout-green h4 { color: #2d6e46; }
+    .callout-red h4 { color: #c44a3c; }
+    .callout-blue h4 { color: #2d5a8a; }
+    .callout-amber h4 { color: #92400e; }
+
+    .scenario { background: #F5F1E8; border-radius: 10px; padding: 20px; margin: 16px 0; border: 1px solid #ddd8cb; }
+    .scenario h4 { font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+    .scenario .label { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 11px; font-weight: 700; margin-bottom: 8px; }
+    .scenario .label-easy { background: #e6f3ec; color: #2d6e46; }
+    .scenario .label-medium { background: #fef9e6; color: #92400e; }
+    .scenario .label-hard { background: #fef2f2; color: #c44a3c; }
+    .step { display: flex; gap: 10px; margin-bottom: 6px; font-size: 14px; }
+    .step-num { background: #000; color: #F5F1E8; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; margin-top: 2px; }
+
+    .badge-example { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+    .badge-red { background: #fde8e6; color: #c44a3c; }
+    .badge-green { background: #f0f5f2; color: #7da88e; }
+    .badge-amber { background: #fdf8ed; color: #c4a55a; }
+
+    .visual-example { background: #EEEAD9; border-radius: 8px; padding: 14px 18px; margin: 12px 0; border: 1px solid #ddd8cb; font-size: 13px; }
+    .visual-example.has-issue { border-left: 4px solid #E85D4D; }
+    .visual-example.approved { border-left: 4px solid #3b8a5a; opacity: 0.6; }
+
+    .toc { background: #F5F1E8; border-radius: 10px; padding: 20px; margin-bottom: 32px; border: 1px solid #ddd8cb; }
+    .toc h3 { margin-top: 0; font-size: 14px; color: #8a8279; letter-spacing: 1px; text-transform: uppercase; }
+    .toc ol { margin-bottom: 0; }
+    .toc a { color: #2d5a8a; text-decoration: none; font-weight: 600; }
+    .toc a:hover { text-decoration: underline; }
+
+    @media (max-width: 600px) {
+      .content { padding: 20px 16px 60px; }
+      h2 { font-size: 18px; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>VA TRAINING GUIDE</h1>
+    <div class="brand">BLUEPRINT FOR SCALE</div>
+  </div>
+  <a href="/va-review">&larr; Back to Lead Review</a>
+</div>
+
+<div class="content">
+
+  <div class="intro">
+    <h2>What is the Lead Review tool?</h2>
+    <p>Every lead that comes in through Google Ads or LSA gets matched to a customer record in our field management software (Housecall Pro). The Lead Review tool flags leads that need a human to verify the data looks correct. Your job is to review each flagged lead, resolve any issues, and either approve it or flag it for a manager.</p>
+  </div>
+
+  <div class="toc">
+    <h3>Contents</h3>
+    <ol>
+      <li><a href="#layout">Understanding the Layout</a></li>
+      <li><a href="#filters">Filters &amp; Navigation</a></li>
+      <li><a href="#card">Reading a Lead Card</a></li>
+      <li><a href="#issues">Understanding Issue Types</a></li>
+      <li><a href="#actions">Actions You Can Take</a></li>
+      <li><a href="#scenarios">Common Scenarios</a></li>
+      <li><a href="#rules">Decision Rules</a></li>
+      <li><a href="#mistakes">Common Mistakes to Avoid</a></li>
+    </ol>
+  </div>
+
+  <!-- ─── SECTION 1: LAYOUT ─── -->
+  <h2 id="layout">1. Understanding the Layout</h2>
+
+  <h3>Top Bar</h3>
+  <ul>
+    <li><strong>Client dropdown</strong> — Select "All Clients — Review Queue" to see flagged leads across all clients, or pick a specific client to see just their leads.</li>
+    <li><strong>Need Review button</strong> (red) — Shows the count of leads waiting for your review. This is your main work queue.</li>
+    <li><strong>All Leads</strong> — Shows every lead (reviewed and unreviewed). Useful for searching.</li>
+    <li><strong>Approved</strong> — Shows leads that have already been reviewed and approved. Faded out.</li>
+  </ul>
+
+  <h3>Progress Bar</h3>
+  <p>Shows how many leads you've reviewed vs. how many remain. The green bar fills up as you work through the queue.</p>
+
+  <h3>Lead Cards</h3>
+  <p>Each card shows a lead summary. Click it to expand and see the full detail.</p>
+
+  <!-- ─── SECTION 2: FILTERS ─── -->
+  <h2 id="filters">2. Filters &amp; Navigation</h2>
+
+  <p>When you first load the page with "All Clients" selected, it automatically shows the <strong>Need Review</strong> queue. These are leads the system has flagged for human review.</p>
+
+  <p>Use the <strong>Prev/Next</strong> buttons at the bottom to page through results (25 leads per page).</p>
+
+  <div class="callout callout-blue">
+    <h4>Tip: Work top to bottom</h4>
+    <p>Leads are sorted so the ones with the most issues appear first. Work from top to bottom for maximum impact.</p>
+  </div>
+
+  <!-- ─── SECTION 3: READING A CARD ─── -->
+  <h2 id="card">3. Reading a Lead Card</h2>
+
+  <h3>Card Summary (Collapsed)</h3>
+  <p>Before you click, each card shows:</p>
+  <ul>
+    <li><strong>Name</strong> — The customer's name from Housecall Pro</li>
+    <li><strong>Source badge</strong> — <span class="badge-example badge-green">Google Ads</span> or <span class="badge-example" style="background:#e6f0fa;color:#2d5a8a">LSA</span> or <span class="badge-example" style="background:#edeae4;color:#a9a49b">google_business_profile</span></li>
+    <li><strong>Status badge</strong> — <span class="badge-example badge-red">Issue</span> means it needs attention. <span class="badge-example badge-green">Approved</span> means done. <span class="badge-example badge-amber">Flagged</span> means a manager needs to look.</li>
+    <li><strong>Date, phone, match method</strong> — When the lead came in, their phone number, and how they were matched (phone, email, etc.)</li>
+    <li><strong>Revenue</strong> — The ROAS revenue amount in green. A dash (—) means no revenue yet.</li>
+  </ul>
+
+  <div class="callout callout-red">
+    <h4>Red left border = has issues</h4>
+    <p>Cards with a red left border have flagged issues. These are the ones that need your attention most.</p>
+  </div>
+
+  <h3>Card Detail (Expanded)</h3>
+  <p>Click a card to expand it. You'll see:</p>
+
+  <ol>
+    <li><strong>Needs Attention box</strong> (red box at top) — Lists exactly what's wrong in plain English. This tells you why the lead was flagged.</li>
+    <li><strong>Lead Info</strong> — Phone, email, source, lead date</li>
+    <li><strong>Pipeline</strong> — How far the lead has progressed: inspections, estimates, jobs, invoices</li>
+    <li><strong>Inspections section</strong> — Each inspection with date, address, status, and amount</li>
+    <li><strong>Estimates section</strong> — Each estimate with date, address, status, and amount</li>
+    <li><strong>Jobs section</strong> — Each job with date, address, status, and amount</li>
+    <li><strong>Invoices section</strong> — Each invoice with date, number, status, and amount</li>
+    <li><strong>Lead Source selector</strong> — Change the attribution if needed</li>
+    <li><strong>Action buttons</strong> — Approve, Flag, or Skip</li>
+  </ol>
+
+  <!-- ─── SECTION 4: ISSUE TYPES ─── -->
+  <h2 id="issues">4. Understanding Issue Types</h2>
+
+  <h3>Structural Issues (shown in red boxes)</h3>
+
+  <div class="scenario">
+    <h4>"Multiple inspections at different addresses"</h4>
+    <p>This customer has inspections at more than one address. Each address is a separate project and should stay separate. This is usually fine — just verify and approve.</p>
+  </div>
+
+  <div class="scenario">
+    <h4>"Multiple inspections at same address"</h4>
+    <p>This customer has multiple inspections at the same address. These might be <strong>segments</strong> of one project (e.g., attic + crawlspace done on different days) and may need to be grouped together.</p>
+  </div>
+
+  <div class="scenario">
+    <h4>"Multiple estimates — may need to be combined"</h4>
+    <p>This customer has more than one estimate. They could be options for the same project (e.g., basic vs. premium remediation plan) or separate projects.</p>
+  </div>
+
+  <div class="scenario">
+    <h4>"Multiple jobs at same/different addresses"</h4>
+    <p>Same logic as inspections. Same address = possible segments to group. Different addresses = separate projects, keep as-is.</p>
+  </div>
+
+  <div class="scenario">
+    <h4>"Job found but $0 revenue — amount may be missing"</h4>
+    <p>There's an active job but the dollar amount is zero. The job total might not have been entered in Housecall Pro yet. Flag this for the manager.</p>
+  </div>
+
+  <h3>Data Quality Issues (from system flags)</h3>
+
+  <div class="scenario">
+    <h4>"Missing funnel step"</h4>
+    <p>The lead is missing a step in the normal flow. For example, they have a job but no inspection, or an estimate but no inspection. This could mean a record wasn't created in HCP, or the lead was handled differently. Review and approve if it makes sense, or flag if something looks off.</p>
+  </div>
+
+  <div class="scenario">
+    <h4>"Job exists without an estimate"</h4>
+    <p>There's a job but no estimate was sent. Some clients skip estimates for smaller jobs — this can be normal. If the job has a reasonable amount and the rest of the lead looks good, approve it.</p>
+  </div>
+
+  <div class="scenario">
+    <h4>"Segment revenue looks off"</h4>
+    <p>The revenue on a segment (part of a grouped job) doesn't look right compared to other segments or the total. Check the individual amounts. Flag for manager if unsure.</p>
+  </div>
+
+  <div class="scenario">
+    <h4>"Classification uncertain"</h4>
+    <p>The system couldn't confidently determine if a record is an inspection or a job. Look at the description, the amount, and the timing. If a "job" is actually a $0 inspection, you can reclassify it using the type pill.</p>
+  </div>
+
+  <div class="scenario">
+    <h4>"Name mismatch"</h4>
+    <p>The name from the call tracking system (CallRail) doesn't match the name in HCP. This is common — caller ID often shows a different name than the actual customer. As long as the phone number matched, it's usually fine.</p>
+  </div>
+
+  <div class="scenario">
+    <h4>"Pre-existing customer" (amber Pre-lead pill)</h4>
+    <p>The customer's record in HCP/Jobber was created more than 7 days before their first Google Ads call. This means they were already a customer before any ad brought them in. Their revenue might not be attributable to Google Ads — they may have found the company through a referral or previous visit, then later clicked an ad. <strong>Flag for manager</strong> unless the dates are very close (within a couple weeks) and it looks like a normal new customer flow.</p>
+  </div>
+
+  <!-- ─── SECTION 5: ACTIONS ─── -->
+  <h2 id="actions">5. Actions You Can Take</h2>
+
+  <h3>Main Actions (bottom of card)</h3>
+
+  <div class="callout callout-green">
+    <h4>Approve — Looks Good</h4>
+    <p>Use this when everything looks correct. The lead, pipeline, and revenue all make sense. The card disappears from your queue.</p>
+  </div>
+
+  <div class="callout callout-red">
+    <h4>Flag for Manager</h4>
+    <p>Use this when something doesn't look right and you're not sure what to do. You can add a note explaining what you noticed. A manager will review it later.</p>
+  </div>
+
+  <div class="callout callout-blue">
+    <h4>Skip</h4>
+    <p>Closes the card without taking action. The lead stays in the queue. Use this if you need to come back to it later.</p>
+  </div>
+
+  <h3>Section Actions (for structural issues)</h3>
+  <p>When a section (inspections, estimates, or jobs) has a red border and shows multiple items, you'll see these options:</p>
+
+  <ul>
+    <li><strong>Group Selected</strong> — Select 2+ items by clicking them (they turn blue), then click this button to mark them as parts of one project. The first item becomes the "parent" and the others become nested segments/options.</li>
+    <li><strong>All separate &rarr; Keep as-is</strong> — Click this if each item is a genuinely separate project (e.g., different addresses, different customers at same address). This resolves the issue.</li>
+    <li><strong>Not sure &rarr; Flag</strong> — If you can't tell whether items should be grouped, flag the section for a manager.</li>
+  </ul>
+
+  <div class="callout callout-blue">
+    <h4>Auto-approve</h4>
+    <p>Once all issue sections are resolved (either grouped, kept separate, or flagged), the lead automatically approves and removes itself from your queue. You don't need to click Approve separately.</p>
+  </div>
+
+  <h3>Other Actions</h3>
+
+  <ul>
+    <li><strong>Revenue toggle (checkbox)</strong> — Uncheck to exclude a record from revenue calculations. Use this if an item is a duplicate or shouldn't count toward revenue.</li>
+    <li><strong>Type pill (inspection &harr; / job &harr;)</strong> — Click to reclassify a record. A confirmation will pop up. Use this if an inspection is actually a job or vice versa.</li>
+    <li><strong>Lead Source selector</strong> — Change where the lead is attributed. Only change this if you have a reason to (e.g., it says "Unknown" but you can see it came from Google Ads).</li>
+    <li><strong>Undo (on grouped items)</strong> — If you grouped items by mistake, click "Undo" on the group label to split them back apart.</li>
+  </ul>
+
+  <!-- ─── SECTION 6: COMMON SCENARIOS ─── -->
+  <h2 id="scenarios">6. Common Scenarios</h2>
+
+  <div class="scenario">
+    <span class="label label-easy">Easy</span>
+    <h4>Lead looks clean, no red boxes</h4>
+    <p>The "Needs Attention" box says something like "Missing funnel step" but when you look at the pipeline, there's an inspection, estimate, and job — all with reasonable amounts.</p>
+    <div class="step"><div class="step-num">1</div><span>Verify the pipeline makes sense (inspection &rarr; estimate &rarr; job)</span></div>
+    <div class="step"><div class="step-num">2</div><span>Check that revenue is reasonable (not $0 if there's a completed job)</span></div>
+    <div class="step"><div class="step-num">3</div><span>Click <strong>Approve</strong></span></div>
+  </div>
+
+  <div class="scenario">
+    <span class="label label-easy">Easy</span>
+    <h4>Multiple inspections at different addresses</h4>
+    <p>Customer has 2 inspections — one at "123 Main St" and one at "456 Oak Ave".</p>
+    <div class="step"><div class="step-num">1</div><span>Confirm the addresses are actually different</span></div>
+    <div class="step"><div class="step-num">2</div><span>Click <strong>All separate &rarr; Keep as-is</strong></span></div>
+    <div class="step"><div class="step-num">3</div><span>Lead auto-approves</span></div>
+  </div>
+
+  <div class="scenario">
+    <span class="label label-medium">Medium</span>
+    <h4>Multiple inspections at the same address</h4>
+    <p>Customer has 2 inspections both at "123 Main St" — one on Jan 5 and one on Jan 12.</p>
+    <div class="step"><div class="step-num">1</div><span>Look at the dates. If they're close together (within a few weeks), they're probably segments of one project (e.g., attic inspection + crawlspace inspection)</span></div>
+    <div class="step"><div class="step-num">2</div><span>Click both items to select them (they turn blue)</span></div>
+    <div class="step"><div class="step-num">3</div><span>Click <strong>Group Selected</strong></span></div>
+    <div class="step"><div class="step-num">4</div><span>Lead auto-approves</span></div>
+    <p style="margin-top:10px"><strong>Exception:</strong> If inspections are months apart, they might be separate visits (e.g., re-inspection after treatment). In that case, <strong>Keep as-is</strong>.</p>
+  </div>
+
+  <div class="scenario">
+    <span class="label label-medium">Medium</span>
+    <h4>Multiple estimates for one customer</h4>
+    <p>Customer has 2 estimates — "$4,500 Mold Remediation" and "$6,200 Mold Remediation + Encapsulation".</p>
+    <div class="step"><div class="step-num">1</div><span>Check if they're for the same address. If yes, they're probably options (basic vs. premium plan)</span></div>
+    <div class="step"><div class="step-num">2</div><span>Select both estimates, then click <strong>Group Selected</strong>. They become options under one estimate.</span></div>
+    <div class="step"><div class="step-num">3</div><span>If one is approved and the other isn't, the approved one's revenue is what counts</span></div>
+  </div>
+
+  <div class="scenario">
+    <span class="label label-medium">Medium</span>
+    <h4>Job with $0 revenue</h4>
+    <p>The lead has a job marked "Scheduled" or "In Progress" but the amount is $0.</p>
+    <div class="step"><div class="step-num">1</div><span>Check if there's an estimate with a dollar amount — if yes, the revenue comes from the estimate and this is fine</span></div>
+    <div class="step"><div class="step-num">2</div><span>If there's no estimate either, <strong>Flag for Manager</strong> with a note: "Job has $0 and no estimate"</span></div>
+  </div>
+
+  <div class="scenario">
+    <span class="label label-medium">Medium</span>
+    <h4>Classification uncertain — is it an inspection or a job?</h4>
+    <p>A record is labeled "job" but it's $0 and was done before any estimate was sent.</p>
+    <div class="step"><div class="step-num">1</div><span>Look at the timeline: if it happened before an estimate, it's probably an inspection</span></div>
+    <div class="step"><div class="step-num">2</div><span>Look at the description: if it says "mold inspection" or "assessment," it's an inspection</span></div>
+    <div class="step"><div class="step-num">3</div><span>Click the <strong>job &harr;</strong> pill to reclassify it as an inspection</span></div>
+  </div>
+
+  <div class="scenario">
+    <span class="label label-easy">Easy</span>
+    <h4>Name mismatch</h4>
+    <p>CallRail says "SMITH JOHN" but HCP says "John Smith". Or CallRail says "ACME PLUMBING" but HCP says "Sarah Johnson".</p>
+    <div class="step"><div class="step-num">1</div><span>This is almost always fine — caller ID names are unreliable</span></div>
+    <div class="step"><div class="step-num">2</div><span>As long as the phone number matched, click <strong>Approve</strong></span></div>
+    <div class="step"><div class="step-num">3</div><span>Only flag if the lead looks like it might be a completely different person (different phone AND different name AND different date)</span></div>
+  </div>
+
+  <div class="scenario">
+    <span class="label label-hard">Advanced</span>
+    <h4>Lead source looks wrong</h4>
+    <p>A lead shows "Unknown" source but you can see it came from a Google Ads call.</p>
+    <div class="step"><div class="step-num">1</div><span>Look at the Lead Info section for clues — does it have a GCLID? Does the source field say anything?</span></div>
+    <div class="step"><div class="step-num">2</div><span>If you're confident about the correct source, use the <strong>Lead Source selector</strong> at the bottom to change it</span></div>
+    <div class="step"><div class="step-num">3</div><span>If unsure, leave it and approve — the source can always be corrected later</span></div>
+  </div>
+
+  <div class="scenario">
+    <span class="label label-hard">Advanced</span>
+    <h4>Multiple jobs at the same address with different amounts</h4>
+    <p>Customer has Job 1 ($3,200) and Job 2 ($1,800) both at "123 Main St", one week apart.</p>
+    <div class="step"><div class="step-num">1</div><span>These are likely segments — the client split the work into two parts (e.g., demo + remediation)</span></div>
+    <div class="step"><div class="step-num">2</div><span>Select both, click <strong>Group Selected</strong></span></div>
+    <div class="step"><div class="step-num">3</div><span>The total revenue ($5,000) is now counted as one project</span></div>
+    <p style="margin-top:10px"><strong>Exception:</strong> If jobs are months apart at the same address, it might be a separate project (e.g., return customer). <strong>Keep as-is</strong> in that case.</p>
+  </div>
+
+  <!-- ─── SECTION 7: DECISION RULES ─── -->
+  <h2 id="rules">7. Decision Rules</h2>
+
+  <h3>When to Approve</h3>
+  <ul>
+    <li>The pipeline makes sense (inspection &rarr; estimate &rarr; job &rarr; invoice is the normal flow)</li>
+    <li>Revenue amounts are reasonable and non-zero (for completed jobs)</li>
+    <li>All structural issues have been resolved (grouped or kept separate)</li>
+    <li>Minor flags like name mismatch or classification — you've verified it looks correct</li>
+  </ul>
+
+  <h3>When to Flag for Manager</h3>
+  <ul>
+    <li>You're not sure whether items should be grouped or kept separate</li>
+    <li>Revenue is $0 with no estimate and a completed/scheduled job</li>
+    <li>Something looks genuinely wrong that you can't fix (e.g., wrong customer entirely)</li>
+    <li>The lead seems like it might be spam or a wrong number, but you're not certain</li>
+  </ul>
+
+  <h3>When to Skip</h3>
+  <ul>
+    <li>You need more context and want to come back later</li>
+    <li>You're in the middle of something and want to continue with another lead first</li>
+  </ul>
+
+  <h3>Grouping Rules of Thumb</h3>
+  <div class="callout callout-amber">
+    <h4>Same address, close dates = Group them</h4>
+    <p>If two inspections, jobs, or estimates are at the same address within a few weeks of each other, they are almost always parts of the same project. Group them.</p>
+  </div>
+  <div class="callout callout-blue">
+    <h4>Different addresses = Keep separate</h4>
+    <p>Different addresses always mean different projects. Click "Keep as-is."</p>
+  </div>
+  <div class="callout callout-amber">
+    <h4>Same address, months apart = Usually keep separate</h4>
+    <p>If visits to the same address are several months apart, it's likely a return customer or a new project. Keep as-is, or flag if you're unsure.</p>
+  </div>
+
+  <!-- ─── SECTION 8: MISTAKES ─── -->
+  <h2 id="mistakes">8. Common Mistakes to Avoid</h2>
+
+  <ul>
+    <li><strong>Don't approve without expanding the card.</strong> Always click to see the detail before approving. The card summary doesn't show everything.</li>
+    <li><strong>Don't group items at different addresses.</strong> Different addresses = different projects, always.</li>
+    <li><strong>Don't change the lead source unless you're sure.</strong> If it says "Google Ads" and you're not certain it's wrong, leave it alone.</li>
+    <li><strong>Don't uncheck revenue toggles unless you know why.</strong> Unchecking a revenue toggle removes that amount from the client's ROAS calculation. Only do this for genuine duplicates.</li>
+    <li><strong>Don't spend too long on one lead.</strong> If you've been looking at a lead for more than 2 minutes and you're still unsure, flag it for the manager and move on.</li>
+    <li><strong>Don't worry about name mismatches.</strong> Caller ID names are unreliable. The phone number match is what matters.</li>
+  </ul>
+
+  <div class="callout callout-green">
+    <h4>Remember: Flag is always safe</h4>
+    <p>If you're ever unsure about anything, flagging for a manager is always the right call. It's better to flag something that turns out to be fine than to approve something that's wrong. A manager can always approve a flagged lead, but fixing an incorrectly approved lead is harder.</p>
+  </div>
+
+</div>
+
+</body>
+</html>

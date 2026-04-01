@@ -1,0 +1,15 @@
+{
+  "name": "blueprint-brain-bot",
+  "version": "1.0.0",
+  "description": "Blueprint Brain — AI assistant for client intelligence in Slack",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@slack/bolt": "^4.1.0",
+    "dotenv": "^17.3.1",
+    "pg": "^8.13.0"
+  }
+}

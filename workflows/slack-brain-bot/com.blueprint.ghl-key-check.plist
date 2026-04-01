@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.blueprint.ghl-key-check</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/bp/projects/workflows/slack-brain-bot/ghl-key-check.js</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/bp/projects/workflows/slack-brain-bot</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>7</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/Users/bp/projects/workflows/slack-brain-bot/logs/ghl-check-stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/bp/projects/workflows/slack-brain-bot/logs/ghl-check-stderr.log</string>
+</dict>
+</plist>

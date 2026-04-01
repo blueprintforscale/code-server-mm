@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.blueprint.sheet-pull</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/bp/projects/workflows/sheet-sync/sheet-pull.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/bp/projects/workflows/sheet-sync</string>
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Minute</key>
+            <integer>45</integer>
+        </dict>
+    </array>
+    <key>StandardOutPath</key>
+    <string>/Users/bp/projects/workflows/sheet-sync/launchd-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/bp/projects/workflows/sheet-sync/launchd-stderr.log</string>
+</dict>
+</plist>

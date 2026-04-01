@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cohort Benchmarks — Blueprint for Scale</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #F5F1E8; color: #000; min-height: 100vh; }
+
+    .header {
+      background: #000; color: #F5F1E8; padding: 1.25rem 2rem;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .header-left { display: flex; align-items: center; gap: 1rem; }
+    .header-left h1 { font-size: 1.1rem; font-weight: 700; letter-spacing: -0.01em; }
+    .header-left .divider { width: 1px; height: 24px; background: rgba(245,241,232,0.25); }
+    .header-left .portal-label { font-size: 0.8rem; color: rgba(245,241,232,0.6); font-weight: 400; text-transform: uppercase; letter-spacing: 0.08em; }
+    .header-right { font-size: 0.85rem; color: rgba(245,241,232,0.7); }
+
+    .container { max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem; }
+
+    .date-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1.5rem; flex-wrap: wrap; }
+    .date-row label { font-size: 0.78rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #666; }
+    .date-row input[type="date"] {
+      padding: 0.45rem 0.7rem; border: 1px solid #d4d0c8; border-radius: 6px;
+      font-size: 0.85rem; background: #fff; color: #000; font-family: inherit;
+    }
+    .date-shortcuts { display: flex; gap: 0.35rem; margin-right: 0.75rem; }
+    .date-shortcut {
+      padding: 0.4rem 0.85rem; border: 1px solid #d4d0c8; border-radius: 6px;
+      background: #fff; font-size: 0.78rem; font-weight: 600; color: #555;
+      cursor: pointer; transition: all 0.15s;
+    }
+    .date-shortcut:hover { border-color: #000; color: #000; }
+    .date-shortcut.active { background: #000; color: #F5F1E8; border-color: #000; }
+
+    .tab-bar { display: flex; gap: 0; margin-bottom: 2rem; border-bottom: 2px solid #e0dcd4; }
+    .tab {
+      padding: 0.7rem 1.5rem; font-size: 0.85rem; font-weight: 500;
+      color: #888; cursor: pointer; border-bottom: 3px solid transparent;
+      margin-bottom: -2px; transition: all 0.15s; user-select: none;
+    }
+    .tab:hover { color: #000; }
+    .tab.active { color: #000; font-weight: 700; border-bottom-color: #E85D4D; }
+
+    .state-message { text-align: center; padding: 4rem 1rem; }
+    .state-message .spinner {
+      width: 36px; height: 36px; border: 3px solid #e0dcd4;
+      border-top-color: #000; border-radius: 50%;
+      animation: spin 0.7s linear infinite; margin: 0 auto 1rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .state-message p { color: #888; font-size: 0.95rem; }
+
+    .funnel-section {
+      background: #111118; border-radius: 12px; padding: 2rem 2.5rem;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15); margin-bottom: 2rem;
+    }
+    .funnel-title {
+      font-size: 0.82rem; font-weight: 700; margin-bottom: 1.5rem;
+      text-transform: uppercase; letter-spacing: 0.06em; color: rgba(255,255,255,0.45);
+    }
+    .funnel-visual svg { width: 100%; display: block; }
+    .funnel-visual svg text { font-family: system-ui, -apple-system, sans-serif; }
+
+    @keyframes funnelSlideIn {
+      from { opacity: 0; transform: translateY(-8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .funnel-visual svg .funnel-stage-group {
+      opacity: 0;
+      animation: funnelSlideIn 0.4s ease-out forwards;
+    }
+
+    .funnel-overall {
+      margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.1);
+      display: flex; justify-content: center; align-items: center; gap: 0.5rem;
+      font-size: 0.82rem; color: rgba(255,255,255,0.5);
+    }
+    .funnel-overall strong { font-size: 1rem; color: #fff; }
+
+    .kpi-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem; margin-bottom: 2rem;
+    }
+    .kpi-card {
+      background: #fff; border-radius: 10px; padding: 1.25rem 1.5rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .kpi-card .kpi-label {
+      font-size: 0.68rem; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.06em; color: #999; margin-bottom: 0.35rem;
+    }
+    .kpi-card .kpi-value { font-size: 1.65rem; font-weight: 700; }
+    .kpi-card .kpi-sub { font-size: 0.75rem; color: #999; margin-top: 0.2rem; }
+    .kpi-revenue .kpi-value { color: #16a34a; }
+    .kpi-accent { border-left: 3px solid #E85D4D; }
+
+    .velocity-section {
+      background: #fff; border-radius: 10px; padding: 1.5rem 2rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 2rem;
+    }
+    .velocity-title {
+      font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.06em; color: #999; margin-bottom: 1rem;
+    }
+    .velocity-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem;
+    }
+    .velocity-item { text-align: center; }
+    .velocity-item .vel-value { font-size: 1.4rem; font-weight: 700; color: #000; }
+    .velocity-item .vel-label { font-size: 0.7rem; color: #999; margin-top: 0.2rem; }
+
+    /* Client comparison table */
+    .table-section {
+      background: #fff; border-radius: 10px; padding: 1.5rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 2rem; overflow-x: auto;
+    }
+    .table-title {
+      font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.06em; color: #999; margin-bottom: 1rem;
+    }
+    .client-table {
+      width: 100%; border-collapse: collapse; font-size: 0.85rem;
+    }
+    .client-table th {
+      text-align: left; padding: 0.6rem 0.75rem; font-size: 0.7rem;
+      font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+      color: #999; border-bottom: 2px solid #e0dcd4;
+    }
+    .client-table th.num { text-align: right; }
+    .client-table td {
+      padding: 0.55rem 0.75rem; border-bottom: 1px solid #f0ede6;
+    }
+    .client-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .client-table tr:last-child td { border-bottom: none; }
+    .client-table tr.avg-row {
+      background: #f9f7f2; font-weight: 700;
+    }
+    .client-table tr.avg-row td { border-top: 2px solid #e0dcd4; border-bottom: none; }
+
+    /* Color coding for rates */
+    .rate-high { color: #16a34a; }
+    .rate-mid { color: #d97706; }
+    .rate-low { color: #dc2626; }
+
+    .client-count-badge {
+      display: inline-block; background: rgba(255,255,255,0.15); color: rgba(255,255,255,0.7);
+      font-size: 0.72rem; font-weight: 600; padding: 0.2rem 0.6rem; border-radius: 4px;
+      margin-left: 0.75rem; vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      <h1>Blueprint for Scale</h1>
+      <div class="divider"></div>
+      <span class="portal-label">Cohort Benchmarks</span>
+    </div>
+    <div class="header-right" id="clientCount"></div>
+  </div>
+
+  <div class="container">
+    <div class="date-row">
+      <div class="date-shortcuts">
+        <div class="date-shortcut" onclick="setDateRange(30)">30 days</div>
+        <div class="date-shortcut" onclick="setDateRange(60)">60 days</div>
+        <div class="date-shortcut" onclick="setDateRange(90)">90 days</div>
+        <div class="date-shortcut" onclick="setDateRange(180)">180 days</div>
+        <div class="date-shortcut" onclick="setDateRange('lifetime')">Lifetime</div>
+      </div>
+      <label>From</label>
+      <input type="date" id="dateFrom" onchange="loadCohort()">
+      <label>To</label>
+      <input type="date" id="dateTo" onchange="loadCohort()">
+    </div>
+
+    <div class="tab-bar" id="source-tabs">
+      <div class="tab active" data-source="google_ads" onclick="switchTab(this)">Google Ads</div>
+      <div class="tab" data-source="google_ads_basic" onclick="switchTab(this)">Google Ads — Basic</div>
+      <div class="tab" data-source="google_ads_free" onclick="switchTab(this)">Google Ads — Free Insp.</div>
+      <div class="tab" data-source="google_ads_paid" onclick="switchTab(this)">Google Ads — Paid Insp.</div>
+      <div class="tab" data-source="all" onclick="switchTab(this)">All Sources</div>
+      <div class="tab" data-source="lsa" onclick="switchTab(this)">LSA</div>
+      <div class="tab" data-source="gbp" onclick="switchTab(this)">Google Business Profile</div>
+    </div>
+
+    <div id="content">
+      <div class="state-message"><div class="spinner"></div><p>Loading cohort data...</p></div>
+    </div>
+  </div>
+
+<script>
+var activeSource = 'google_ads';
+
+function fmtDate(d) { return d.toISOString().split('T')[0]; }
+
+function setDateRange(days) {
+  var now = new Date();
+  var from;
+  if (days === 'lifetime') {
+    from = new Date('2024-01-01');
+  } else {
+    from = new Date(now);
+    from.setDate(from.getDate() - days);
+  }
+  document.getElementById('dateFrom').value = fmtDate(from);
+  document.getElementById('dateTo').value = fmtDate(now);
+  document.querySelectorAll('.date-shortcut').forEach(function(btn) { btn.classList.remove('active'); });
+  var label = days === 'lifetime' ? 'Lifetime' : days + ' days';
+  document.querySelectorAll('.date-shortcut').forEach(function(btn) {
+    if (btn.textContent === label) btn.classList.add('active');
+  });
+  loadCohort();
+}
+
+function switchTab(el) {
+  document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
+  el.classList.add('active');
+  activeSource = el.dataset.source;
+  loadCohort();
+}
+
+function loadCohort() {
+  var content = document.getElementById('content');
+  content.innerHTML = '<div class="state-message"><div class="spinner"></div><p>Loading cohort data...</p></div>';
+  var dateFrom = document.getElementById('dateFrom').value;
+  var dateTo = document.getElementById('dateTo').value;
+  // google_ads_basic uses the google_ads API source
+  var apiSource = activeSource === 'google_ads_basic' ? 'google_ads' : activeSource;
+  var params = new URLSearchParams({ source: apiSource });
+  if (dateFrom) params.set('date_from', dateFrom);
+  if (dateTo) params.set('date_to', dateTo);
+
+  fetch('/api/cohort/funnel?' + params)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error || !data.client_count) {
+        content.innerHTML = '<div class="state-message"><p>No cohort data available.</p></div>';
+        return;
+      }
+      document.getElementById('clientCount').textContent = data.client_count + ' of ' + data.total_clients + ' clients (min 5 leads)';
+      content.innerHTML = '';
+      if (activeSource === 'google_ads_basic') {
+        renderBasicFunnel(data, content);
+      } else {
+        renderFunnel(data, content);
+      }
+      renderKPIs(data, content);
+      if (activeSource !== 'google_ads_basic') {
+        renderVelocity(data, content);
+      }
+      renderClientTable(data, content);
+    })
+    .catch(function() {
+      content.innerHTML = '<div class="state-message"><p>Unable to load cohort data.</p></div>';
+    });
+}
+
+function fmtNum(n) { return (n || 0).toLocaleString(); }
+function fmtMoney(n) { return '$' + Math.round(n || 0).toLocaleString(); }
+function fmtPct(v) {
+  if (v === null || v === undefined) return '\u2014';
+  return (v * 100).toFixed(1) + '%';
+}
+function fmtPctRaw(v) {
+  if (v === null || v === undefined) return '\u2014';
+  return parseFloat(v).toFixed(1) + '%';
+}
+
+var STAGES = [
+  { key: 'leads',                label: 'Leads' },
+  { key: 'inspection_scheduled', label: 'Inspection Scheduled' },
+  { key: 'inspection_completed', label: 'Inspection Completed' },
+  { key: 'estimate_sent',        label: 'Estimate Sent' },
+  { key: 'estimate_approved',    label: 'Estimate Approved' },
+  { key: 'job_scheduled',        label: 'Job Scheduled' },
+  { key: 'job_completed',        label: 'Job Completed' },
+];
+
+var RATE_KEYS = [
+  'lead_to_insp_sched',
+  'insp_sched_to_comp',
+  'insp_comp_to_est_sent',
+  'est_sent_to_approved',
+  'est_appr_to_job_sched',
+  'job_sched_to_comp',
+];
+
+function renderFunnel(data, container) {
+  var section = document.createElement('div');
+  section.className = 'funnel-section';
+
+  var stages = data.stages || {};
+  var rates = data.conversion_rates || {};
+  var maxCount = 1;
+  STAGES.forEach(function(s) {
+    var c = stages[s.key] ? stages[s.key].count : 0;
+    if (c > maxCount) maxCount = c;
+  });
+
+  var gS = [55, 80, 120], gE = [232, 93, 77];
+  function lerp(t) {
+    return 'rgb(' + Math.round(gS[0]+(gE[0]-gS[0])*t) + ',' + Math.round(gS[1]+(gE[1]-gS[1])*t) + ',' + Math.round(gS[2]+(gE[2]-gS[2])*t) + ')';
+  }
+
+  var svgW = 800;
+  var barMaxW = 480;
+  var barH = 48;
+  var taperH = 6;
+  var pillH = 22;
+  var countX = svgW - 80;
+  var r = 5;
+
+  // For cohort, use conversion rates to derive visual widths (starts at 100%, narrows)
+  var rateValues = [1]; // leads = 100%
+  var cumulative = 1;
+  RATE_KEYS.forEach(function(rk) {
+    var rate = rates[rk];
+    if (rate !== null && rate !== undefined) {
+      cumulative *= rate;
+    }
+    rateValues.push(cumulative);
+  });
+
+  var widths = rateValues.map(function(rv) {
+    return Math.max(rv * barMaxW, 18);
+  });
+
+  var totalH = STAGES.length * barH + (STAGES.length - 1) * (taperH + pillH);
+  var svgContent = '';
+
+  for (var i = 0; i < STAGES.length; i++) {
+    var info = stages[STAGES[i].key] || { count: 0 };
+    var w = widths[i];
+    var color = lerp(i / (STAGES.length - 1));
+    var y = i * (barH + taperH + pillH);
+    var delay = (i * 0.12).toFixed(2);
+
+    svgContent += '<g class="funnel-stage-group" style="animation-delay:' + delay + 's">';
+
+    // Taper
+    if (i < STAGES.length - 1) {
+      var nextW = widths[i + 1];
+      var ty = y + barH;
+      svgContent += '<path d="M0,' + ty + ' L' + w + ',' + ty +
+        ' L' + nextW + ',' + (ty + taperH + pillH) + ' L0,' + (ty + taperH + pillH) +
+        ' Z" fill="' + color + '"/>';
+    }
+
+    // Bar
+    if (i === 0) {
+      svgContent += '<path d="M' + r + ',' + y + ' L' + (w-r) + ',' + y +
+        ' Q' + w + ',' + y + ' ' + w + ',' + (y+r) +
+        ' L' + w + ',' + (y+barH) + ' L0,' + (y+barH) +
+        ' L0,' + (y+r) + ' Q0,' + y + ' ' + r + ',' + y + ' Z" fill="' + color + '"/>';
+    } else if (i === STAGES.length - 1) {
+      svgContent += '<path d="M0,' + y + ' L' + w + ',' + y +
+        ' L' + w + ',' + (y+barH-r) + ' Q' + w + ',' + (y+barH) + ' ' + (w-r) + ',' + (y+barH) +
+        ' L' + r + ',' + (y+barH) + ' Q0,' + (y+barH) + ' 0,' + (y+barH-r) + ' Z" fill="' + color + '"/>';
+    } else {
+      svgContent += '<rect x="0" y="' + y + '" width="' + w + '" height="' + barH + '" fill="' + color + '"/>';
+    }
+
+    // Label on bar
+    var midY = y + barH / 2;
+    svgContent += '<text x="14" y="' + (midY+1) + '" fill="rgba(255,255,255,0.95)" font-size="14" font-weight="700" dominant-baseline="middle">' + STAGES[i].label + '</text>';
+
+    // Connector line
+    var lineX1 = w + 8;
+    var lineX2 = countX - 60;
+    svgContent += '<line x1="' + lineX1 + '" y1="' + (midY+1) + '" x2="' + lineX2 + '" y2="' + (midY+1) + '" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>';
+
+    // Total count (for context)
+    svgContent += '<text x="' + countX + '" y="' + (midY+1) + '" fill="rgba(255,255,255,0.5)" font-size="16" font-weight="600" dominant-baseline="middle" text-anchor="end">' + fmtNum(info.count) + '</text>';
+
+    // Avg conversion % pill between stages
+    if (i < STAGES.length - 1) {
+      var rateKey = RATE_KEYS[i];
+      var rate = rates[rateKey];
+      var pillY = y + barH + taperH/2 + pillH/2;
+      var pillCx = svgW / 2;
+      var convStr = fmtPct(rate);
+      var pillBg = 'rgba(255,255,255,0.12)';
+      var pillColor = 'rgba(255,255,255,0.7)';
+      svgContent += '<rect x="' + (pillCx-36) + '" y="' + (pillY-10) + '" width="72" height="20" rx="10" fill="' + pillBg + '"/>';
+      svgContent += '<text x="' + pillCx + '" y="' + (pillY+1) + '" fill="' + pillColor + '" font-size="11" font-weight="700" dominant-baseline="middle" text-anchor="middle">avg ' + convStr + '</text>';
+    }
+
+    svgContent += '</g>';
+  }
+
+  section.innerHTML =
+    '<div class="funnel-title">Cohort Conversion Funnel <span class="client-count-badge">' + data.client_count + ' clients</span></div>' +
+    '<div class="funnel-visual">' +
+    '<svg viewBox="0 0 ' + svgW + ' ' + totalH + '" preserveAspectRatio="xMinYMin meet">' +
+    svgContent +
+    '</svg></div>' +
+    '<div class="funnel-overall">Avg overall conversion: <strong>' + fmtPct(rates.overall) + '</strong></div>';
+
+  container.appendChild(section);
+}
+
+function renderBasicFunnel(data, container) {
+  var section = document.createElement('div');
+  section.className = 'funnel-section';
+
+  var stages = data.stages || {};
+  var rates = data.conversion_rates || {};
+
+  var BASIC_STAGES = [
+    { key: 'leads',                label: 'Leads' },
+    { key: 'inspection_scheduled', label: 'Inspection Scheduled' },
+    { key: 'estimate_approved',    label: 'Estimate Approved' },
+  ];
+
+  var BASIC_RATES = [
+    'lead_to_insp_sched',
+    null, // insp_sched → est_approved is a composite rate
+  ];
+
+  // Compute insp_sched → est_approved composite rate
+  var inspToApproved = null;
+  var inspCount = stages.inspection_scheduled ? stages.inspection_scheduled.count : 0;
+  var apprCount = stages.estimate_approved ? stages.estimate_approved.count : 0;
+  if (inspCount > 0) inspToApproved = apprCount / inspCount;
+
+  var maxCount = 1;
+  BASIC_STAGES.forEach(function(s) {
+    var c = stages[s.key] ? stages[s.key].count : 0;
+    if (c > maxCount) maxCount = c;
+  });
+
+  var gS = [55, 80, 120], gE = [232, 93, 77];
+  function lerp(t) {
+    return 'rgb(' + Math.round(gS[0]+(gE[0]-gS[0])*t) + ',' + Math.round(gS[1]+(gE[1]-gS[1])*t) + ',' + Math.round(gS[2]+(gE[2]-gS[2])*t) + ')';
+  }
+
+  var svgW = 800;
+  var barMaxW = 480;
+  var barH = 64;
+  var taperH = 10;
+  var pillH = 28;
+  var countX = svgW - 80;
+  var r = 6;
+
+  var widths = BASIC_STAGES.map(function(s) {
+    var c = stages[s.key] ? stages[s.key].count : 0;
+    var w = (c / maxCount) * barMaxW;
+    if (c > 0 && w < 24) w = 24;
+    return w;
+  });
+
+  var totalH = BASIC_STAGES.length * barH + (BASIC_STAGES.length - 1) * (taperH + pillH);
+  var svgContent = '';
+
+  for (var i = 0; i < BASIC_STAGES.length; i++) {
+    var info = stages[BASIC_STAGES[i].key] || { count: 0 };
+    var w = widths[i];
+    var color = lerp(i / (BASIC_STAGES.length - 1));
+    var y = i * (barH + taperH + pillH);
+    var delay = (i * 0.15).toFixed(2);
+
+    svgContent += '<g class="funnel-stage-group" style="animation-delay:' + delay + 's">';
+
+    // Taper
+    if (i < BASIC_STAGES.length - 1) {
+      var nextW = widths[i + 1];
+      var ty = y + barH;
+      svgContent += '<path d="M0,' + ty + ' L' + w + ',' + ty +
+        ' L' + nextW + ',' + (ty + taperH + pillH) + ' L0,' + (ty + taperH + pillH) +
+        ' Z" fill="' + color + '"/>';
+    }
+
+    // Bar
+    if (i === 0) {
+      svgContent += '<path d="M' + r + ',' + y + ' L' + (w-r) + ',' + y +
+        ' Q' + w + ',' + y + ' ' + w + ',' + (y+r) +
+        ' L' + w + ',' + (y+barH) + ' L0,' + (y+barH) +
+        ' L0,' + (y+r) + ' Q0,' + y + ' ' + r + ',' + y + ' Z" fill="' + color + '"/>';
+    } else if (i === BASIC_STAGES.length - 1) {
+      svgContent += '<path d="M0,' + y + ' L' + w + ',' + y +
+        ' L' + w + ',' + (y+barH-r) + ' Q' + w + ',' + (y+barH) + ' ' + (w-r) + ',' + (y+barH) +
+        ' L' + r + ',' + (y+barH) + ' Q0,' + (y+barH) + ' 0,' + (y+barH-r) + ' Z" fill="' + color + '"/>';
+    } else {
+      svgContent += '<rect x="0" y="' + y + '" width="' + w + '" height="' + barH + '" fill="' + color + '"/>';
+    }
+
+    // Label on bar
+    var midY = y + barH / 2;
+    svgContent += '<text x="18" y="' + (midY+1) + '" fill="rgba(255,255,255,0.95)" font-size="16" font-weight="700" dominant-baseline="middle">' + BASIC_STAGES[i].label + '</text>';
+
+    // Connector line
+    var lineX1 = w + 8;
+    var lineX2 = countX - 70;
+    svgContent += '<line x1="' + lineX1 + '" y1="' + (midY+1) + '" x2="' + lineX2 + '" y2="' + (midY+1) + '" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>';
+
+    // Count
+    svgContent += '<text x="' + countX + '" y="' + (midY+1) + '" fill="#fff" font-size="26" font-weight="800" dominant-baseline="middle" text-anchor="end">' + fmtNum(info.count) + '</text>';
+
+    // Conversion pill
+    if (i < BASIC_STAGES.length - 1) {
+      var rate = (i === 0) ? rates.lead_to_insp_sched : inspToApproved;
+      var pillY = y + barH + taperH/2 + pillH/2;
+      var pillCx = svgW / 2;
+      var convStr = fmtPct(rate);
+      var pillLabel = (i === 0) ? 'avg book rate ' : 'avg close rate ';
+      svgContent += '<rect x="' + (pillCx-56) + '" y="' + (pillY-11) + '" width="112" height="22" rx="11" fill="rgba(255,255,255,0.12)"/>';
+      svgContent += '<text x="' + pillCx + '" y="' + (pillY+1) + '" fill="rgba(255,255,255,0.7)" font-size="11" font-weight="700" dominant-baseline="middle" text-anchor="middle">' + pillLabel + convStr + '</text>';
+    }
+
+    svgContent += '</g>';
+  }
+
+  // Overall: leads → estimate approved
+  var leadsCount = stages.leads ? stages.leads.count : 0;
+  var overallBasic = leadsCount > 0 ? apprCount / leadsCount : null;
+
+  section.innerHTML =
+    '<div class="funnel-title">Google Ads — Basic Funnel <span class="client-count-badge">' + data.client_count + ' clients</span></div>' +
+    '<div class="funnel-visual">' +
+    '<svg viewBox="0 0 ' + svgW + ' ' + totalH + '" preserveAspectRatio="xMinYMin meet">' +
+    svgContent +
+    '</svg></div>' +
+    '<div class="funnel-overall">Lead \u2192 Estimate Approved: <strong>' + fmtPct(overallBasic) + '</strong></div>';
+
+  container.appendChild(section);
+}
+
+function renderKPIs(data, container) {
+  var kpis = data.kpis || {};
+  var rates = data.conversion_rates || {};
+
+  var grid = document.createElement('div');
+  grid.className = 'kpi-grid';
+
+  var cards = '';
+
+  // Row 1: Client count, Total Revenue, Avg Revenue/Lead, Avg Overall Conversion
+  cards +=
+    '<div class="kpi-card">' +
+      '<div class="kpi-label">Clients in Cohort</div>' +
+      '<div class="kpi-value">' + data.client_count + '</div>' +
+      '<div class="kpi-sub">' + data.total_clients + ' total active</div>' +
+    '</div>' +
+    '<div class="kpi-card kpi-revenue">' +
+      '<div class="kpi-label">Total Revenue</div>' +
+      '<div class="kpi-value">' + fmtMoney(kpis.total_revenue) + '</div>' +
+      '<div class="kpi-sub">Across all clients</div>' +
+    '</div>' +
+    '<div class="kpi-card kpi-accent">' +
+      '<div class="kpi-label">Avg Revenue / Lead</div>' +
+      '<div class="kpi-value">' + fmtMoney(kpis.avg_revenue_per_lead) + '</div>' +
+    '</div>' +
+    '<div class="kpi-card">' +
+      '<div class="kpi-label">Avg Book Rate</div>' +
+      '<div class="kpi-value">' + fmtPct(rates.lead_to_insp_sched) + '</div>' +
+      '<div class="kpi-sub">Lead \u2192 Inspection</div>' +
+    '</div>';
+
+  grid.innerHTML = cards;
+  container.appendChild(grid);
+
+  // Row 2: Ad metrics (if applicable)
+  if (kpis.clients_with_spend > 0 && (activeSource.startsWith('google_ads') || activeSource === 'lsa' || activeSource === 'all')) {
+    var adGrid = document.createElement('div');
+    adGrid.className = 'kpi-grid';
+    adGrid.style.marginTop = '-0.25rem';
+    var srcLabel = activeSource === 'lsa' ? 'LSA' : activeSource === 'google_ads_free' ? 'Google Ads (Free Insp.)' : activeSource === 'google_ads_paid' ? 'Google Ads (Paid Insp.)' : activeSource === 'google_ads' ? 'Google Ads' : 'All Paid';
+    adGrid.innerHTML =
+      '<div class="kpi-card" style="grid-column: 1 / -1; padding: 0.6rem 1.5rem; background: #faf9f6; border-top: 2px solid #e0dcd4;">' +
+        '<div class="kpi-label" style="margin-bottom:0; color: #aaa; font-size: 0.65rem;">' + srcLabel + ' Performance (avg across ' + kpis.clients_with_spend + ' clients)</div>' +
+      '</div>' +
+      '<div class="kpi-card">' +
+        '<div class="kpi-label">Avg Monthly Spend</div>' +
+        '<div class="kpi-value">' + fmtMoney(kpis.avg_ad_spend) + '</div>' +
+      '</div>' +
+      '<div class="kpi-card">' +
+        '<div class="kpi-label">Avg Cost Per Lead</div>' +
+        '<div class="kpi-value">' + fmtMoney(kpis.avg_cpl) + '</div>' +
+      '</div>' +
+      '<div class="kpi-card">' +
+        '<div class="kpi-label">Avg ROAS</div>' +
+        '<div class="kpi-value">' + kpis.avg_roas.toFixed(1) + 'x</div>' +
+      '</div>';
+    container.appendChild(adGrid);
+  }
+}
+
+function renderVelocity(data, container) {
+  var vel = data.velocity || {};
+  var section = document.createElement('div');
+  section.className = 'velocity-section';
+
+  var items = [
+    { key: 'lead_to_insp_scheduled', label: 'Lead \u2192 Insp Sched' },
+    { key: 'insp_scheduled_to_completed', label: 'Sched \u2192 Complete' },
+    { key: 'insp_completed_to_est_sent', label: 'Complete \u2192 Est Sent' },
+    { key: 'est_sent_to_approved', label: 'Est Sent \u2192 Approved' },
+    { key: 'est_approved_to_job', label: 'Approved \u2192 Job' },
+    { key: 'lead_to_job_completed', label: 'Lead \u2192 Done' },
+  ];
+
+  var html = '<div class="velocity-title">Avg Pipeline Velocity (days)</div><div class="velocity-grid">';
+  items.forEach(function(item) {
+    var val = vel[item.key];
+    html += '<div class="velocity-item">' +
+      '<div class="vel-value">' + (val !== null && val !== undefined ? val.toFixed(1) : '\u2014') + '</div>' +
+      '<div class="vel-label">' + item.label + '</div>' +
+    '</div>';
+  });
+  html += '</div>';
+  section.innerHTML = html;
+  container.appendChild(section);
+}
+
+function renderClientTable(data, container) {
+  var clients = data.clients || [];
+  var rates = data.conversion_rates || {};
+  if (!clients.length) return;
+
+  var section = document.createElement('div');
+  section.className = 'table-section';
+
+  var html = '<div class="table-title">Client Comparison</div>';
+  html += '<table class="client-table">';
+  html += '<thead><tr>' +
+    '<th>Client</th>' +
+    '<th class="num">Leads</th>' +
+    '<th class="num">Book Rate</th>' +
+    '<th class="num">Completion</th>' +
+    '<th class="num">Close Rate</th>' +
+    '<th class="num">Overall</th>' +
+    '<th class="num">Revenue</th>' +
+  '</tr></thead>';
+  html += '<tbody>';
+
+  // Average row first
+  html += '<tr class="avg-row">' +
+    '<td>Cohort Average</td>' +
+    '<td class="num">\u2014</td>' +
+    '<td class="num">' + fmtPct(rates.lead_to_insp_sched) + '</td>' +
+    '<td class="num">' + fmtPct(rates.insp_sched_to_comp) + '</td>' +
+    '<td class="num">' + fmtPct(rates.est_sent_to_approved) + '</td>' +
+    '<td class="num">' + fmtPct(rates.overall) + '</td>' +
+    '<td class="num">\u2014</td>' +
+  '</tr>';
+
+  clients.forEach(function(c) {
+    html += '<tr>' +
+      '<td>' + esc(c.name) + '</td>' +
+      '<td class="num">' + fmtNum(c.leads) + '</td>' +
+      '<td class="num ' + rateClass(c.book_rate, rates.lead_to_insp_sched) + '">' + fmtPctRaw(c.book_rate) + '</td>' +
+      '<td class="num ' + rateClass(c.completion_rate, rates.insp_sched_to_comp) + '">' + fmtPctRaw(c.completion_rate) + '</td>' +
+      '<td class="num ' + rateClass(c.close_rate, rates.est_sent_to_approved) + '">' + fmtPctRaw(c.close_rate) + '</td>' +
+      '<td class="num ' + rateClass(c.overall_rate, rates.overall) + '">' + fmtPctRaw(c.overall_rate) + '</td>' +
+      '<td class="num">' + fmtMoney(c.revenue) + '</td>' +
+    '</tr>';
+  });
+
+  html += '</tbody></table>';
+  section.innerHTML = html;
+  container.appendChild(section);
+}
+
+// Color-code: green if above avg, red if below 70% of avg, orange in between
+function rateClass(clientRate, avgRate) {
+  if (clientRate === null || avgRate === null || avgRate === undefined) return '';
+  var cr = parseFloat(clientRate);
+  var ar = (avgRate * 100);
+  if (cr >= ar) return 'rate-high';
+  if (cr >= ar * 0.7) return 'rate-mid';
+  return 'rate-low';
+}
+
+function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// Init
+setDateRange(30);
+</script>
+</body>
+</html>

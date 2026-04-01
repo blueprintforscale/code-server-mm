@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Client Prep | Blueprint for Scale</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js" defer></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: #141210; color: #e8e4db; font-size: 13px; }
+
+  /* Header — brand black */
+  .hdr { background: #000; padding: 10px 20px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #2a2520; }
+  .hdr a { color: #E85D4D; text-decoration: none; font-size: 12px; font-weight: 500; }
+  .hdr h1 { font-size: 15px; font-weight: 700; color: #F5F1E8; letter-spacing: -0.3px; }
+  .hdr-brand { font-size: 9px; font-weight: 800; letter-spacing: 2px; color: #F5F1E8; margin-left: 8px; opacity: 0.4; }
+  .badge { margin-left: auto; font-size: 10px; padding: 3px 8px; border-radius: 6px; font-weight: 600; }
+  .b-ok { background: #1a3a2a; color: #3b8a5a; }
+  .b-warn { background: #3a2a1a; color: #c4890a; }
+  .b-bad { background: #3a1a1a; color: #E85D4D; }
+
+  /* Alert bar */
+  .alert-bar { padding: 6px 20px; font-size: 11px; font-weight: 600; }
+  .alert-bar.warn { background: #3a2a1a; color: #fbbf24; }
+  .alert-bar.crit { background: #3a1a1a; color: #f87171; }
+
+  /* Layout */
+  .dash { padding: 10px 16px; display: grid; grid-template-columns: 1fr 1fr 1fr 1fr 1fr; gap: 8px; }
+
+  /* Cards — warm dark with brand border */
+  .c { background: #1e1c19; border-radius: 8px; padding: 12px; border: 1px solid #2a2520; overflow: hidden; }
+  .c1 { grid-column: span 1; }
+  .c2 { grid-column: span 2; }
+  .c3 { grid-column: span 3; }
+  .c5 { grid-column: span 5; }
+  .ct { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px; color: #8a8279; margin-bottom: 6px; display: flex; align-items: center; justify-content: space-between; }
+
+  /* Stat cards */
+  .sv { font-size: 22px; font-weight: 800; color: #F5F1E8; text-align: center; }
+  .sl { font-size: 8px; text-transform: uppercase; letter-spacing: 0.8px; color: #8a8279; text-align: center; margin-top: 2px; }
+  .ss { font-size: 10px; color: #c5bfb6; text-align: center; }
+  .up { color: #4ade80; }
+  .dn { color: #f87171; }
+
+  /* Content */
+  .body { font-size: 12px; line-height: 1.6; color: #ccc; }
+  .body strong { color: #F5F1E8; font-weight: 600; }
+
+  /* Buttons */
+  .btn { padding: 3px 10px; background: #333; color: #ccc; border: 1px solid #444; border-radius: 4px; cursor: pointer; font-size: 10px; font-weight: 500; }
+  .btn:hover { background: #444; color: #fff; }
+  .btn-p { background: #E85D4D; color: #F5F1E8; border-color: #E85D4D; }
+  .btn-p:hover { background: #c44a3c; }
+
+  /* Items */
+  .item { padding: 4px 0; border-bottom: 1px solid #2a2520; }
+  .item:last-child { border-bottom: none; }
+  .item-row { display: flex; justify-content: space-between; align-items: center; }
+  .item-name { font-weight: 600; color: #e0dcd4; font-size: 12px; }
+  .item-sub { font-size: 10px; color: #888; }
+  .item-tag { font-size: 9px; color: #E85D4D; font-weight: 500; }
+  .overdue { color: #f87171; font-weight: 600; }
+
+  /* Tags */
+  .loc { display: inline-block; font-size: 10px; padding: 1px 6px; background: #2a2a2a; border-radius: 3px; color: #999; margin: 1px; }
+
+  /* Profile rows */
+  .pr { display: flex; justify-content: space-between; padding: 2px 0; font-size: 11px; }
+  .pr-l { color: #666; }
+  .pr-v { color: #ccc; font-weight: 500; }
+
+  /* Bio / text */
+  .bio { font-size: 12px; line-height: 1.6; color: #ccc; white-space: pre-wrap; }
+  .bio strong { color: #F5F1E8; }
+  .ta { width: 100%; padding: 8px; background: #141210; border: 1px solid #2a2520; border-radius: 4px; color: #ccc; font-size: 12px; font-family: inherit; resize: vertical; min-height: 50px; }
+  .ta:focus { outline: none; border-color: #E85D4D; }
+
+  .loading { color: #666; font-style: italic; font-size: 11px; }
+  .empty { color: #555; font-size: 11px; }
+  .saved { color: #4ade80; font-size: 10px; }
+
+  /* Scrollable card content */
+  .scroll { max-height: 200px; overflow-y: auto; }
+  .scroll::-webkit-scrollbar { width: 4px; }
+  .scroll::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+
+  /* Expand link */
+  .exp { font-size: 10px; color: #E85D4D; cursor: pointer; }
+
+  /* Map styles */
+  #territory-map { z-index: 1; }
+  .leaflet-container { background: #f2efe6 !important; }
+  .map-tip { background: #fff !important; color: #333 !important; border: 1px solid #E85D4D !important; font-size: 11px !important; padding: 3px 8px !important; border-radius: 4px !important; box-shadow: 0 2px 8px rgba(0,0,0,0.15) !important; font-weight: 600 !important; }
+  .map-tip::before { border-top-color: #E85D4D !important; }
+  .nb-label { background: transparent !important; border: none !important; box-shadow: none !important; }
+  .leaflet-control-zoom a { background: #1e1c19 !important; color: #aaa !important; border-color: #333 !important; }
+  .leaflet-control-zoom a:hover { color: #fff !important; background: #333 !important; }
+</style>
+</head>
+<body>
+<div x-data="prep()" x-init="init()">
+
+  <div class="hdr">
+    <a href="/prep">&larr; Prep</a>
+    <h1 x-text="p?.client_name || 'Loading...'"></h1>
+    <span class="hdr-brand">BLUEPRINT</span>
+    <template x-if="lastCall">
+      <span class="badge" :class="(lastCall.days_since_call||99)<=7?'b-ok':(lastCall.days_since_call||99)<=14?'b-warn':'b-bad'"
+            x-text="lastCall.days_since_call!=null?lastCall.days_since_call+'d since call':'No calls'"></span>
+    </template>
+  </div>
+
+  <!-- Alert bar -->
+  <template x-for="a in (alerts||[]).slice(0,2)">
+    <div class="alert-bar" :class="a.severity==='critical'?'crit':'warn'" x-text="a.message"></div>
+  </template>
+
+  <div class="dash">
+    <!-- Row 1: Stats -->
+    <div class="c c1"><div class="sv" x-text="metrics?.leads_this_month||0"></div><div class="sl">Leads</div><div class="ss" :class="leadPct.startsWith('-')?'dn':'up'" x-text="leadPct||'—'"></div></div>
+    <div class="c c1"><div class="sv" x-text="roasStr"></div><div class="sl">ROAS</div></div>
+    <div class="c c1"><div class="sv" x-text="tasks?.length||0"></div><div class="sl">Open Tasks</div></div>
+    <div class="c c1"><div class="sv" x-text="'Mo '+(p?.program_month||'-')"></div><div class="sl">Program</div></div>
+    <div class="c c1"><div class="sv" x-text="lastCall?.days_since_call??'-'"></div><div class="sl">Days Since Call</div></div>
+
+    <!-- Row 2: AI Summary (3 cols) + Contacts & Upcoming (2 cols) -->
+    <div class="c c3">
+      <div class="ct">AI Prep Summary <template x-if="!aiSummary&&!aiLoading"><button class="btn btn-p" @click="genSummary()">Generate</button></template></div>
+      <div class="body scroll" style="max-height:280px;">
+        <template x-if="aiLoading"><span class="loading">Generating...</span></template>
+        <template x-if="aiSummary"><div x-html="md(aiSummary)"></div></template>
+        <template x-if="!aiSummary&&!aiLoading"><span class="empty">Click Generate for call prep</span></template>
+      </div>
+    </div>
+    <div class="c c2">
+      <div class="ct">Contacts & Upcoming</div>
+      <div class="scroll" style="max-height:280px;">
+        <template x-if="upcoming?.length">
+          <div style="margin-bottom:8px;">
+            <template x-for="u in upcoming">
+              <div class="item" style="font-size:11px;">
+                <span style="color:#E85D4D;font-weight:600;" x-text="fmtDate(u.interaction_date)"></span>
+                <span x-text="fmtTime(u.interaction_date)"></span> — <span x-text="title(u.summary)"></span>
+              </div>
+            </template>
+          </div>
+        </template>
+        <div style="border-top:1px solid #2a2a2a;padding-top:6px;">
+          <template x-for="c in (contacts||[])">
+            <div class="item">
+              <div class="item-name" x-text="c.name"></div>
+              <div class="item-tag" x-text="c.role"></div>
+              <template x-if="c.phone"><div class="item-sub" x-text="c.phone"></div></template>
+              <template x-if="c.email"><div class="item-sub" x-text="c.email"></div></template>
+            </div>
+          </template>
+          <template x-if="!contacts?.length"><div class="empty">No contacts</div></template>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 3: Bio (3 cols) + Comms Summary (2 cols) -->
+    <div class="c c3">
+      <div class="ct">
+        Client Bio
+        <div style="display:flex;gap:3px;">
+          <template x-if="!bioEdit&&!bioGen"><button class="btn" @click="bioEdit=true">Edit</button></template>
+          <template x-if="!bioEdit&&!bioGen"><button class="btn" @click="genBio()" x-text="bioText?'Refresh':'Auto-Fill'"></button></template>
+          <template x-if="bioEdit"><button class="btn btn-p" @click="saveBio()">Save</button></template>
+          <template x-if="bioEdit"><button class="btn" @click="genBio()">AI</button></template>
+          <template x-if="bioEdit"><button class="btn" @click="bioEdit=false;bioText=p?.client_bio||''">X</button></template>
+          <template x-if="bioSaved"><span class="saved">Saved</span></template>
+        </div>
+      </div>
+      <template x-if="bioGen"><span class="loading">Generating...</span></template>
+      <template x-if="!bioGen&&!bioEdit"><div class="bio scroll" style="max-height:220px;" x-html="bioText?md(bioText):'<span class=empty>Click Auto-Fill</span>'"></div></template>
+      <template x-if="!bioGen&&bioEdit"><textarea class="ta" style="min-height:180px" x-model="bioText"></textarea></template>
+    </div>
+    <div class="c c2">
+      <div class="ct">Recent Topics <template x-if="!commsSummary&&!commsLoading"><button class="btn" @click="genComms()">Load</button></template></div>
+      <div class="body scroll" style="max-height:220px;">
+        <template x-if="commsLoading"><span class="loading">Extracting topics...</span></template>
+        <template x-if="commsSummary"><div x-html="md(commsSummary)"></div></template>
+        <template x-if="!commsSummary&&!commsLoading"><span class="empty">Click Load to see recent conversation topics</span></template>
+      </div>
+    </div>
+
+    <!-- Row 3.5: Recent Activity (full width) -->
+    <div class="c c5">
+      <div class="ct">Recent Lead Activity <button class="btn" @click="loadActivity()" x-show="!actLoaded&&!actLoading">Load</button></div>
+      <template x-if="actLoading"><span class="loading">Loading activity...</span></template>
+      <template x-if="actLoaded">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+          <!-- Wins or Outstanding Estimates -->
+          <div>
+            <template x-if="actWins.length">
+              <div>
+                <div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#4ade80;margin-bottom:6px;">Recent Wins</div>
+                <template x-for="w in actWins" :key="w.name+w.event_date">
+                  <div class="item" style="padding:5px 0;">
+                    <div class="item-name" style="font-size:11px;">
+                      <span x-text="w.name"></span>
+                      <span style="color:#4ade80;font-weight:700;" x-text="'$'+Number(w.amount).toLocaleString()"></span>
+                    </div>
+                    <div class="item-sub" style="font-size:9px;">
+                      <span x-text="w.event_type==='job_completed'?'Job Completed':'Est. Approved'"></span>
+                      <span x-text="fmtShort(w.event_date)"></span>
+                      <span class="item-tag" x-text="srcLabel(w.lead_source)"></span>
+                    </div>
+                    <div class="item-sub" style="font-size:9px;color:#666;">
+                      Lead from <span x-text="fmtShort(w.lead_date)"></span>
+                      <template x-if="w.days_to_close!=null"><span x-text="' \u00b7 '+w.days_to_close+'d to close'"></span></template>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </template>
+            <template x-if="!actWins.length && actEst.length">
+              <div>
+                <div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#fbbf24;margin-bottom:6px;">Outstanding Estimates</div>
+                <template x-for="e in actEst" :key="e.name+e.estimate_date">
+                  <div class="item" style="padding:5px 0;">
+                    <div class="item-name" style="font-size:11px;">
+                      <span x-text="e.name"></span>
+                      <span style="color:#fbbf24;font-weight:700;" x-text="'$'+Number(e.amount).toLocaleString()"></span>
+                    </div>
+                    <div class="item-sub" style="font-size:9px;">
+                      Sent <span x-text="fmtShort(e.estimate_date)"></span>
+                      <template x-if="e.days_waiting!=null"><span x-text="' \u00b7 '+e.days_waiting+'d waiting'"></span></template>
+                      <span class="item-tag" x-text="srcLabel(e.lead_source)"></span>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </template>
+            <template x-if="!actWins.length && !actEst.length"><div class="empty">No recent wins or estimates</div></template>
+          </div>
+          <!-- Inspections: Upcoming + Recent -->
+          <div>
+            <div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#60a5fa;margin-bottom:6px;">Inspections</div>
+            <template x-if="actUpcoming.length">
+              <div>
+                <div style="font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:#3b82f6;margin-bottom:4px;">Upcoming</div>
+                <template x-for="ins in actUpcoming" :key="ins.name+ins.scheduled_at">
+                  <div class="item" style="padding:5px 0;border-left:2px solid #3b82f6;padding-left:6px;">
+                    <div class="item-name" style="font-size:11px;" x-text="ins.name"></div>
+                    <div class="item-sub" style="font-size:9px;">
+                      <span x-text="fmtShort(ins.scheduled_at)"></span>
+                      <span class="item-tag" x-text="srcLabel(ins.lead_source)"></span>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </template>
+            <template x-if="actRecent.length">
+              <div :style="actUpcoming.length ? 'margin-top:6px;' : ''">
+                <div style="font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:#666;margin-bottom:4px;">Recent</div>
+                <template x-for="ins in actRecent" :key="ins.name+ins.scheduled_at">
+                  <div class="item" style="padding:5px 0;">
+                    <div class="item-name" style="font-size:11px;" x-text="ins.name"></div>
+                    <div class="item-sub" style="font-size:9px;">
+                      <span x-text="ins.event_type==='completed'?'Completed':'Done'"></span>
+                      <span x-text="fmtShort(ins.scheduled_at)"></span>
+                      <span class="item-tag" x-text="srcLabel(ins.lead_source)"></span>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </template>
+            <template x-if="!actUpcoming.length && !actRecent.length"><div class="empty">No inspections</div></template>
+          </div>
+          <!-- Recent Leads -->
+          <div>
+            <div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#8a8279;margin-bottom:6px;">Recent Leads</div>
+            <template x-for="l in actLeads" :key="l.name+l.lead_date">
+              <div class="item" style="padding:5px 0;">
+                <div class="item-name" style="font-size:11px;">
+                  <span x-text="l.name"></span>
+                  <span style="font-size:9px;padding:1px 5px;background:#2a2520;border-radius:3px;color:#aaa;margin-left:3px;" x-text="l.current_stage"></span>
+                </div>
+                <div class="item-sub" style="font-size:9px;">
+                  <span x-text="fmtShort(l.lead_date)"></span>
+                  <template x-if="l.call_minutes"><span x-text="' \u00b7 '+l.call_minutes+' min call'"></span></template>
+                  <span class="item-tag" x-text="srcLabel(l.lead_source)"></span>
+                </div>
+              </div>
+            </template>
+            <template x-if="!actLeads.length"><div class="empty">No recent leads</div></template>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- Row 4: Territory Map (2, tall vertical) + Profile & Tasks (3) -->
+    <div class="c c2" style="padding:0;overflow:hidden;">
+      <div class="ct" style="padding:10px 12px 0;">Service Territory <span class="empty" x-text="mapStatus"></span></div>
+      <div id="territory-map" style="height:400px;background:#f2efe6;border-radius:0 0 8px 8px;"></div>
+    </div>
+    <div class="c c3">
+      <div class="ct">Profile</div>
+      <div class="scroll" style="max-height:140px;">
+        <template x-for="[l,v] in profRows" :key="l">
+          <div class="pr" x-show="v"><span class="pr-l" x-text="l"></span><span class="pr-v" x-text="v"></span></div>
+        </template>
+        <template x-if="p?.client_goals"><div style="margin-top:4px;font-size:11px;color:#999;"><strong style="color:#ccc;">Goals:</strong> <span x-text="p.client_goals"></span></div></template>
+      </div>
+      <div style="border-top:1px solid #2a2a2a;margin-top:8px;padding-top:8px;">
+        <div class="ct">Open Tasks</div>
+        <div class="scroll" style="max-height:200px;">
+          <template x-for="t in (tasks||[])">
+            <div class="item">
+              <div class="item-name" x-text="t.title" style="font-size:11px;"></div>
+              <div class="item-sub">
+                <span x-text="t.assigned_to||''"></span>
+                <template x-if="t.due_date"><span :class="new Date(t.due_date)<new Date()?'overdue':''" x-text="fmtShort(t.due_date)"></span></template>
+              </div>
+            </div>
+          </template>
+          <template x-if="!tasks?.length"><div class="empty">No tasks</div></template>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 5: Notes (full) -->
+    <div class="c c5">
+      <div class="ct">Personal Notes</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;">
+        <template x-for="n in (personalNotes||[]).slice(0,10)">
+          <div style="flex:1;min-width:200px;padding:4px 8px;background:#1a1a1a;border-radius:4px;font-size:11px;"><span class="item-tag" x-text="n.category"></span> <span x-text="n.note"></span></div>
+        </template>
+        <template x-if="!personalNotes?.length"><div class="empty">No notes</div></template>
+      </div>
+    </div>
+
+    <!-- Row 5: Log Notes (full width) -->
+    <div class="c c5">
+      <div class="ct">Log Call Notes</div>
+      <div style="display:flex;gap:8px;align-items:flex-start;">
+        <textarea class="ta" style="flex:1;min-height:36px;" x-model="newNote" placeholder="Quick notes from the call..."></textarea>
+        <select x-model="noteCat" style="padding:6px;background:#1a1a1a;border:1px solid #333;border-radius:4px;color:#ccc;font-size:10px;">
+          <option value="personal">Personal</option>
+          <option value="preference">Preference</option>
+          <option value="business_change">Biz Change</option>
+          <option value="milestone">Milestone</option>
+        </select>
+        <button class="btn btn-p" @click="saveNote()" :disabled="!newNote.trim()">Save</button>
+        <template x-if="noteSaved"><span class="saved">Saved!</span></template>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function prep() {
+  return {
+    cid: location.pathname.split('/').pop(),
+    p:null, interactions:[], messages:[], tasks:[], personalNotes:[],
+    alerts:[], contacts:[], metrics:null, roas:null, locations:[],
+    lastCall:null, upcoming:[],
+    aiSummary:'', aiLoading:false,
+    bioText:'', bioEdit:false, bioGen:false, bioSaved:false,
+    commsSummary:'', commsLoading:false,
+    newNote:'', noteCat:'personal', noteSaved:false,
+    mapStatus:'', map:null,
+    actLoading:false, actLoaded:false, actWins:[], actEst:[], actUpcoming:[], actRecent:[], actLeads:[],
+
+    async init() {
+      const d = await(await fetch('/api/prep/clients/'+this.cid)).json();
+      Object.assign(this, d);
+      this.p = d.profile;
+      this.bioText = this.p?.client_bio||'';
+      document.title = (this.p?.client_name||'Client')+' | Prep';
+      const today = new Date().toISOString().slice(0,10);
+      if ((this.upcoming||[]).some(u=>new Date(u.interaction_date).toISOString().slice(0,10)===today)) this.genSummary();
+      this.loadMap();
+      this.loadActivity();
+    },
+
+    get leadPct() {
+      if (!this.metrics) return '';
+      const {leads_this_month:n,leads_last_month:l}=this.metrics;
+      if (!l||l==0) return '';
+      const p=Math.round((n/l-1)*100);
+      return (p>=0?'+':'')+p+'%';
+    },
+    get roasStr() { return this.roas?.roas_ratio?parseFloat(this.roas.roas_ratio).toFixed(1)+'x':'-'; },
+    get profRows() {
+      const p=this.p||{};
+      return [['Manager',p.account_manager],['Tier',p.client_tier],['Status',p.onboarding_status],
+        ['Renewal',p.days_until_renewal?p.days_until_renewal+'d':null],
+        ['Last Contact',p.last_interaction_date?this.fmtShort(p.last_interaction_date):'Never'],
+        ['Sentiment',p.last_sentiment],['Slack',p.slack_channel_name?'#'+p.slack_channel_name:null]];
+    },
+
+    // State name → FIPS code lookup for county matching
+    stateFips: {"Alabama":"01","Alaska":"02","Arizona":"04","Arkansas":"05","California":"06","Colorado":"08","Connecticut":"09","Delaware":"10","District of Columbia":"11","Florida":"12","Georgia":"13","Hawaii":"15","Idaho":"16","Illinois":"17","Indiana":"18","Iowa":"19","Kansas":"20","Kentucky":"21","Louisiana":"22","Maine":"23","Maryland":"24","Massachusetts":"25","Michigan":"26","Minnesota":"27","Mississippi":"28","Missouri":"29","Montana":"30","Nebraska":"31","Nevada":"32","New Hampshire":"33","New Jersey":"34","New Mexico":"35","New York":"36","North Carolina":"37","North Dakota":"38","Ohio":"39","Oklahoma":"40","Oregon":"41","Pennsylvania":"42","Rhode Island":"43","South Carolina":"45","South Dakota":"46","Tennessee":"47","Texas":"48","Utah":"49","Vermont":"50","Virginia":"51","Washington":"53","West Virginia":"54","Wisconsin":"55","Wyoming":"56"},
+
+    async loadMap() {
+      this.mapStatus = 'Loading...';
+      try {
+        // Check if topojson library loaded
+        const hasTopojson = typeof topojson !== 'undefined' && topojson.feature;
+
+        // Fetch client data (and county boundaries if topojson is available)
+        const fetches = [fetch('/api/prep/map/'+this.cid).then(r => r.json())];
+        if (hasTopojson) fetches.push(fetch('https://cdn.jsdelivr.net/npm/us-atlas@3/counties-10m.json').then(r => r.json()));
+        const [r, topoResp] = await Promise.all(fetches);
+        const locs = r.locations || [];
+        const neighbors = r.neighbors || [];
+
+        if (locs.length === 0) { this.mapStatus = 'No location data'; return; }
+
+        await this.$nextTick;
+        const el = document.getElementById('territory-map');
+        if (!el) { this.mapStatus = 'Map container not found'; return; }
+
+        // Clean up any previous map instance
+        if (el._leaflet_id) {
+          try { this.map && this.map.remove(); } catch(e) {}
+          el._leaflet_id = null;
+          el.innerHTML = '';
+        }
+
+        // Light map with landmarks visible
+        const map = L.map(el, { zoomControl: false, attributionControl: false });
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+          maxZoom: 18
+        }).addTo(map);
+        L.control.zoom({ position: 'bottomright' }).addTo(map);
+        this.map = map;
+
+        // Build county polygon lookup (if topojson loaded)
+        const countyLookup = {};
+        if (hasTopojson && topoResp) {
+          try {
+            const countiesGeo = topojson.feature(topoResp, topoResp.objects.counties);
+            for (const f of countiesGeo.features) {
+              const sf = String(f.id).padStart(5, '0').slice(0, 2);
+              const name = (f.properties?.name || '').toLowerCase();
+              countyLookup[name + '|' + sf] = f;
+            }
+          } catch(e) { console.warn('TopoJSON parse error:', e); }
+        }
+        const hasPolygons = Object.keys(countyLookup).length > 0;
+
+        const matchedIds = new Set();
+        const bounds = [];
+        let matchedCounties = 0;
+
+        // --- Client's county territories (coral polygons) ---
+        const counties = locs.filter(l => l.target_type === 'County');
+        const nonCounties = locs.filter(l => l.target_type !== 'County');
+
+        for (const loc of counties) {
+          if (loc.lat && loc.lng) bounds.push([loc.lat, loc.lng]);
+
+          // Try polygon match
+          let drawn = false;
+          if (hasPolygons) {
+            const parts = (loc.canonical_name || '').split(',').map(s => s.trim());
+            const cn = (parts[0] || loc.location_name).replace(/\s+County$/i, '').toLowerCase();
+            const sf = this.stateFips[parts[1] || ''];
+            const feature = countyLookup[cn + '|' + sf];
+            if (feature && feature.geometry) {
+              try {
+                // Extract coordinates and build Leaflet polygon manually
+                const geom = feature.geometry;
+                const rings = geom.type === 'MultiPolygon' ? geom.coordinates.flat() : geom.coordinates;
+                // Convert [lng, lat] → [lat, lng] for Leaflet, filter out any bad values
+                const latLngs = rings.map(ring =>
+                  ring.filter(c => c && c.length >= 2 && isFinite(c[0]) && isFinite(c[1]))
+                      .map(c => [c[1], c[0]])
+                ).filter(r => r.length > 2);
+
+                if (latLngs.length > 0) {
+                  L.polygon(latLngs, {
+                    color: '#E85D4D', fillColor: '#E85D4D', fillOpacity: 0.2, weight: 2,
+                  }).addTo(map).bindTooltip(loc.location_name, { direction: 'top', className: 'map-tip', sticky: true });
+                  matchedIds.add(feature.id);
+                  matchedCounties++;
+                  drawn = true;
+                }
+              } catch(e) { console.warn('Polygon draw failed:', loc.location_name, e); }
+            }
+          }
+          // Fallback to circle
+          if (!drawn && loc.lat && loc.lng) {
+            L.circle([loc.lat, loc.lng], {
+              radius: 18000, color: '#E85D4D', fillColor: '#E85D4D', fillOpacity: 0.2, weight: 2,
+            }).addTo(map).bindTooltip(loc.location_name, { direction: 'top', className: 'map-tip' });
+          }
+        }
+
+        // --- Non-county locations (cities, zip codes) — use circles ---
+        for (const loc of nonCounties) {
+          if (!loc.lat || !loc.lng) continue;
+          bounds.push([loc.lat, loc.lng]);
+          const radius = loc.target_type === 'City' ? 10000 : 6000;
+          L.circle([loc.lat, loc.lng], {
+            radius, color: '#E85D4D', fillColor: '#E85D4D', fillOpacity: 0.25, weight: 2,
+          }).addTo(map).bindTooltip(loc.location_name + ' (' + loc.target_type + ')', {
+            direction: 'top', className: 'map-tip',
+          });
+        }
+
+        // --- Neighbor territories (blue polygons or circles) ---
+        const neighborClients = {};
+        for (const n of neighbors) {
+          if (!n.lat || !n.lng) continue;
+          if (!neighborClients[n.customer_id]) {
+            neighborClients[n.customer_id] = { name: n.client_name, locations: [] };
+          }
+          neighborClients[n.customer_id].locations.push(n);
+        }
+
+        for (const [nid, ndata] of Object.entries(neighborClients)) {
+          let cLat = 0, cLng = 0, count = 0;
+          for (const nl of ndata.locations) {
+            cLat += nl.lat; cLng += nl.lng; count++;
+            if (nl.target_type === 'County' && hasPolygons) {
+              const parts = (nl.canonical_name || '').split(',').map(s => s.trim());
+              const cn = (parts[0] || nl.location_name).replace(/\s+County$/i, '').toLowerCase();
+              const stFips = this.stateFips[parts[1] || ''];
+              const feat = countyLookup[cn + '|' + stFips];
+              if (feat && !matchedIds.has(feat.id) && feat.geometry) {
+                try {
+                  const geom = feat.geometry;
+                  const rings = geom.type === 'MultiPolygon' ? geom.coordinates.flat() : geom.coordinates;
+                  const ll = rings.map(ring => ring.filter(c => c && c.length >= 2 && isFinite(c[0]) && isFinite(c[1])).map(c => [c[1], c[0]])).filter(r => r.length > 2);
+                  if (ll.length > 0) L.polygon(ll, { color: '#3b82f6', fillColor: '#3b82f6', fillOpacity: 0.1, weight: 1 }).addTo(map);
+                } catch(e) {}
+              }
+            } else {
+              L.circle([nl.lat, nl.lng], {
+                radius: 10000, color: '#3b82f6', fillColor: '#3b82f6', fillOpacity: 0.1, weight: 1,
+              }).addTo(map);
+            }
+          }
+          // Label at centroid
+          if (count > 0) {
+            cLat /= count; cLng /= count;
+            const shortName = ndata.name.includes('|') ? ndata.name.split('|').pop().trim() : ndata.name;
+            L.marker([cLat, cLng], {
+              icon: L.divIcon({
+                className: 'nb-label',
+                html: '<div style="background:rgba(59,130,246,0.15);border:1px solid #3b82f6;color:#60a5fa;padding:2px 6px;border-radius:4px;font-size:9px;font-weight:600;white-space:nowrap;">'+shortName+'</div>',
+                iconSize: null,
+              })
+            }).addTo(map);
+          }
+        }
+
+        // Fit bounds to CLIENT's territory only — tight framing
+        if (bounds.length > 0) {
+          map.fitBounds(bounds, { padding: [20, 30], maxZoom: 13 });
+        }
+
+        const nCount = Object.keys(neighborClients).length;
+        this.mapStatus = matchedCounties + ' counties' +
+          (nonCounties.length > 0 ? ' + ' + nonCounties.length + ' other' : '') +
+          (nCount > 0 ? ' + ' + nCount + ' neighbors' : '');
+      } catch(e) {
+        this.mapStatus = 'Map error: ' + e.message;
+        console.error('Map error:', e);
+      }
+    },
+
+
+    async genSummary() { this.aiLoading=true; try{const r=await(await fetch('/api/prep/summary/'+this.cid,{method:'POST'})).json();this.aiSummary=r.summary||'Error';}catch(e){this.aiSummary='Error: '+e.message;} this.aiLoading=false; },
+    async genBio() { this.bioGen=true;this.bioEdit=false; try{const r=await(await fetch('/api/prep/bio/'+this.cid+'/generate',{method:'POST'})).json();this.bioText=r.bio||'';this.p.client_bio=this.bioText;}catch(e){alert(e.message);} this.bioGen=false; },
+    async saveBio() { try{await fetch('/api/prep/bio/'+this.cid,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({bio:this.bioText})});this.p.client_bio=this.bioText;this.bioEdit=false;this.bioSaved=true;setTimeout(()=>this.bioSaved=false,3000);}catch(e){alert('Failed');} },
+    async genComms() { this.commsLoading=true; try{const r=await(await fetch('/api/prep/comms/'+this.cid,{method:'POST'})).json();this.commsSummary=r.summary||'No comms';}catch(e){this.commsSummary='Error';} this.commsLoading=false; },
+    async saveNote() { if(!this.newNote.trim())return; try{await fetch('/api/prep/notes/'+this.cid,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({note:this.newNote,category:this.noteCat})});this.personalNotes.unshift({note:this.newNote,category:this.noteCat});this.newNote='';this.noteSaved=true;setTimeout(()=>this.noteSaved=false,3000);}catch(e){alert('Failed');} },
+
+    async loadActivity() {
+      this.actLoading=true;
+      try {
+        const r = await(await fetch('/api/prep/recent-activity/'+this.cid)).json();
+        this.actWins = r.wins||[];
+        this.actEst = r.open_estimates||[];
+        this.actUpcoming = r.upcoming_inspections||[];
+        this.actRecent = r.recent_inspections||[];
+        this.actLeads = r.leads||[];
+        this.actLoaded = true;
+      } catch(e) { console.error(e); }
+      this.actLoading = false;
+    },
+
+    srcLabel(s) {
+      const m = {google_ads:'Google Ads',lsa:'LSA',gbp:'GBP',direct:'Direct',other:'Other'};
+      return m[s]||s||'';
+    },
+
+    md(t){
+      // Color map for section headers
+      const hdrColors = {
+        'strategy': '#4ade80', 'growth': '#4ade80',
+        'active': '#fbbf24', 'issues': '#fbbf24',
+        'performance': '#60a5fa',
+        'client': '#c084fc', 'operations': '#c084fc',
+        'routine': '#888',
+      };
+      function hdrColor(title) {
+        const tl = title.toLowerCase();
+        for (const [k, c] of Object.entries(hdrColors)) { if (tl.includes(k)) return c; }
+        return '#E85D4D';
+      }
+      return t
+        .replace(/\*\*([^*]+)\*\*/g, (_, h) => {
+          const c = hdrColor(h);
+          return '<div style="margin-top:8px;margin-bottom:2px;padding:3px 0;border-left:3px solid '+c+';padding-left:8px;"><span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:'+c+';">'+h+'</span></div>';
+        })
+        .replace(/^[•\-]\s*(.+?)\s*—\s*(.+)$/gm, '<div style="padding:3px 0 3px 14px;"><span style="color:#e0dcd4;font-weight:500;">$1</span> <span style="color:#666;font-size:11px;">— $2</span></div>')
+        .replace(/^[•\-]\s*(.+)$/gm, '<div style="padding:3px 0 3px 14px;"><span style="color:#e0dcd4;">$1</span></div>')
+        .replace(/\n\n+/g, '')
+        .replace(/\n/g, '')
+        .replace(/<br>\s*<br>/g, '');
+    },
+    fmtDate(d){return new Date(d).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});},
+    fmtTime(d){return new Date(d).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});},
+    fmtShort(d){return new Date(d).toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'});},
+    title(s){if(!s)return'';const m=s.match(/\[([^\]]+)\]/);return m?m[1]:s.substring(0,50);},
+  };
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,1108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lead Review</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #ebe7de; color: #000; }
+
+    .header { background: #000; color: #F5F1E8; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+    .header h1 { font-size: 16px; font-weight: 800; letter-spacing: 1px; }
+    .header .brand { font-size: 10px; color: #8a8279; letter-spacing: 1.5px; }
+    .header a { color: #8a8279; font-size: 12px; text-decoration: none; }
+    .header a:hover { color: #F5F1E8; }
+
+    .toolbar { background: #F5F1E8; padding: 12px 24px; border-bottom: 1px solid #ddd8cb; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .toolbar select { padding: 8px 12px; border: 1px solid #ddd8cb; border-radius: 8px; font-size: 14px; background: #EEEAD9; min-width: 250px; }
+    .filter-btn { padding: 8px 16px; border-radius: 20px; font-size: 13px; font-weight: 600; border: 2px solid #ddd8cb; background: #EEEAD9; cursor: pointer; }
+    .filter-btn.active { background: #000; color: #F5F1E8; border-color: #000; }
+    .filter-btn.urgent { background: #E85D4D; color: #fff; border-color: #E85D4D; }
+    .filter-btn.urgent.active { background: #c44a3c; border-color: #c44a3c; }
+
+    .progress-bar { background: #F5F1E8; padding: 8px 24px; border-bottom: 1px solid #ddd8cb; }
+    .progress-track { background: #EEEAD9; border-radius: 8px; height: 8px; overflow: hidden; }
+    .progress-fill { background: #3b8a5a; height: 100%; border-radius: 8px; transition: width 0.3s; }
+    .progress-label { font-size: 12px; color: #8a8279; margin-top: 4px; }
+
+    .card-list { padding: 16px 24px; display: flex; flex-direction: column; gap: 10px; max-width: 900px; margin: 0 auto; }
+
+    .lead-card { background: #F5F1E8; border-radius: 12px; border: 1px solid #ddd8cb; overflow: hidden; transition: box-shadow 0.2s; }
+    .lead-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+    .lead-card.has-issue { border-left: 4px solid #E85D4D; }
+    .lead-card.is-approved { border-left: 4px solid #3b8a5a; opacity: 0.5; }
+    .lead-card.is-flagged { border-left: 4px solid #c4890a; opacity: 0.7; }
+    .lead-card.lead-only { opacity: 0.5; }
+
+    .card-header { padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
+    .card-name { font-size: 16px; font-weight: 700; }
+    .card-meta { font-size: 12px; color: #8a8279; margin-top: 2px; }
+    .card-right { text-align: right; }
+    .card-revenue { font-size: 20px; font-weight: 800; }
+    .card-revenue.has-value { color: #3b8a5a; }
+
+    .badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; margin-left: 4px; }
+    .badge-red { background: #fde8e6; color: #c44a3c; }
+    .badge-green { background: #f0f5f2; color: #7da88e; }
+    .badge-blue { background: #e6f0fa; color: #2d5a8a; }
+    .badge-amber { background: #fdf8ed; color: #c4a55a; }
+    .badge-gray { background: #edeae4; color: #a9a49b; }
+
+    .card-detail { padding: 0 18px 18px; display: none; }
+    .lead-card.open .card-detail { display: block; }
+
+    .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+    .detail-box { background: #EEEAD9; border-radius: 8px; padding: 12px; border: 1px solid #ddd8cb; }
+    .detail-box h4 { font-size: 11px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #8a8279; margin-bottom: 8px; }
+    .detail-row { font-size: 13px; margin-bottom: 4px; display: flex; justify-content: space-between; }
+    .detail-row .label { color: #8a8279; }
+    .detail-row .value { font-weight: 600; }
+
+    .issue-box { background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; }
+    .issue-box h4 { font-size: 13px; font-weight: 700; color: #c44a3c; margin-bottom: 4px; }
+    .issue-box p { font-size: 13px; color: #5a554d; line-height: 1.5; }
+
+    .sub-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: #F5F1E8; border-radius: 6px; margin-bottom: 4px; font-size: 13px; }
+    .sub-item .amount { font-weight: 700; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+    .sub-item.flagged { background: #fef2f2; border: 1.5px solid #E85D4D; }
+    .sub-item.excluded { opacity: 0.4; text-decoration: line-through; }
+    .revenue-toggle { width: 16px; height: 16px; cursor: pointer; accent-color: #3b8a5a; flex-shrink: 0; }
+    .detail-box.has-issue { border: 2px solid #E85D4D; }
+    .detail-box.has-issue h4 { color: #c44a3c; }
+    .inline-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; padding: 8px 0 4px; border-top: 1px dashed #ddd8cb; }
+
+    /* Resolved states after action */
+    .detail-box.resolved { border: 2px solid #3b8a5a; transition: border-color 0.3s; }
+    .detail-box.resolved h4 { color: #2d6e46; transition: color 0.3s; }
+    .sub-item.resolved { background: #e6f3ec; border: 1.5px solid #3b8a5a; transition: all 0.3s; }
+    .sub-item.nested { margin-left: 24px; border-left: 3px solid #3b8a5a; position: relative; transition: all 0.3s; }
+    .sub-item.nested::before { content: '↳'; position: absolute; left: -18px; color: #3b8a5a; font-weight: 700; font-size: 14px; }
+    .sub-item.parent-item { font-weight: 700; background: #e6f3ec; border: 1.5px solid #3b8a5a; }
+    .sub-item.kept-separate { background: #eff6ff; border: 1.5px solid #93c5fd; transition: all 0.3s; }
+    .sub-item.flagged-item { background: #fef9e6; border: 1.5px solid #c4890a; transition: all 0.3s; }
+
+    .sub-item { flex-wrap: wrap; }
+    .sub-desc { width: 100%; font-size: 11px; color: #8a8279; margin-top: 2px; font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* Reclassify pill */
+    .type-pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; cursor: pointer; transition: all 0.2s; }
+    .type-pill:hover { transform: scale(1.05); box-shadow: 0 1px 3px rgba(0,0,0,0.15); }
+    .type-pill.pill-inspection { background: #e0f2fe; color: #0369a1; border: 1px solid #7dd3fc; }
+    .type-pill.pill-job { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
+    .type-pill-hint { font-size: 9px; color: #8a8279; margin-left: 2px; }
+
+    /* Grouping mode */
+    .sub-item.selectable { cursor: pointer; user-select: none; }
+    .sub-item.selectable:hover { outline: 2px solid #3b82f6; outline-offset: -2px; }
+    .sub-item.selected-for-group { background: #dbeafe; border: 2px solid #3b82f6; }
+    .sub-item.grouped { opacity: 0.4; pointer-events: none; }
+    .group-label { font-size: 11px; font-weight: 700; letter-spacing: 1px; color: #2d6e46; margin-top: 10px; margin-bottom: 2px; padding-left: 4px; }
+    .grouping-hint { font-size: 12px; color: #3b82f6; font-weight: 600; margin-bottom: 6px; padding: 6px 10px; background: #eff6ff; border-radius: 6px; }
+    .btn-group { padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; border: 2px solid #3b82f6; background: #3b82f6; color: #fff; cursor: pointer; }
+    .btn-group:hover { background: #2563eb; }
+    .btn-group:disabled { opacity: 0.4; cursor: default; }
+    .btn-group-done { padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; border: 2px solid #3b8a5a; background: #3b8a5a; color: #fff; cursor: pointer; }
+    .btn-group-cancel { padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; border: 2px solid #ddd8cb; background: #EEEAD9; color: #8a8279; cursor: pointer; }
+    .group-label { display: flex; justify-content: space-between; align-items: center; }
+    .undo-link { font-size: 11px; font-weight: 600; color: #E85D4D; cursor: pointer; text-decoration: underline; letter-spacing: 0; text-transform: none; }
+
+    .source-selector { margin-top: 12px; padding: 12px; background: #EEEAD9; border-radius: 8px; border: 1px solid #ddd8cb; }
+    .source-selector label { font-size: 12px; font-weight: 600; color: #8a8279; text-transform: uppercase; letter-spacing: 0.5px; }
+    .source-options { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+    .source-opt { padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; border: 2px solid #ddd8cb; background: #F5F1E8; cursor: pointer; }
+    .source-opt.selected { background: #000; color: #F5F1E8; border-color: #000; }
+
+    .actions { display: flex; gap: 8px; margin-top: 12px; }
+    .btn { padding: 10px 24px; border-radius: 8px; font-size: 14px; font-weight: 700; border: none; cursor: pointer; }
+    .btn-approve { background: #3b8a5a; color: #fff; }
+    .btn-approve:hover { background: #2d6e46; }
+    .btn-flag { background: #E85D4D; color: #fff; }
+    .btn-flag:hover { background: #c44a3c; }
+    .btn-skip { background: #EEEAD9; color: #8a8279; border: 1px solid #ddd8cb; }
+
+    .question-box { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 14px 16px; margin-bottom: 12px; }
+    .question-box h4 { font-size: 13px; font-weight: 700; color: #2d5a8a; margin-bottom: 6px; }
+    .question-box p { font-size: 13px; color: #5a554d; margin-bottom: 10px; }
+    .question-options { display: flex; gap: 8px; flex-wrap: wrap; }
+    .question-btn { padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; border: 2px solid #bfdbfe; background: #fff; cursor: pointer; }
+    .question-btn:hover { background: #eff6ff; }
+    .question-btn.selected { background: #2d5a8a; color: #fff; border-color: #2d5a8a; }
+    .question-btn.done { background: #e6f3ec; color: #2d6e46; border-color: #2d6e46; pointer-events: none; }
+
+    .loading { text-align: center; padding: 40px; color: #8a8279; font-size: 14px; }
+    .empty { text-align: center; padding: 60px 24px; color: #8a8279; }
+    .empty h2 { font-size: 20px; color: #3b8a5a; margin-bottom: 8px; }
+
+    .page-nav { text-align: center; padding: 16px; }
+    .page-nav button { padding: 8px 20px; border-radius: 8px; border: 1px solid #ddd8cb; background: #EEEAD9; cursor: pointer; font-size: 13px; font-weight: 600; margin: 0 4px; }
+    .page-nav button:disabled { opacity: 0.4; cursor: default; }
+    .page-nav span { font-size: 13px; color: #8a8279; margin: 0 12px; }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div>
+      <h1>LEAD REVIEW</h1>
+      <div class="brand">BLUEPRINT FOR SCALE</div>
+    </div>
+    <div style="display:flex;gap:16px;align-items:center">
+      <a href="/va-training">Training Guide</a>
+      <a href="/audit">Switch to Advanced View →</a>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <select id="clientSelect"><option value="">Loading clients...</option></select>
+    <button class="filter-btn urgent active" data-filter="va_needs_review" id="needsBtn">Loading...</button>
+    <button class="filter-btn" data-filter="client_flags" id="clientFlagsBtn" style="border-color:#c4890a;color:#c4890a;font-weight:700">Client Flags</button>
+    <button class="filter-btn" data-filter="all">All Leads</button>
+    <button class="filter-btn" data-filter="approved">Approved</button>
+  </div>
+
+  <div class="progress-bar">
+    <div class="progress-track"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+    <div class="progress-label" id="progressLabel">Loading...</div>
+  </div>
+
+  <div class="card-list" id="cardList">
+    <div class="loading">Loading leads...</div>
+  </div>
+
+  <div class="page-nav" id="pageNav" style="display:none">
+    <button id="prevBtn" onclick="changePage(-1)">← Prev</button>
+    <span id="pageInfo"></span>
+    <button id="nextBtn" onclick="changePage(1)">Next →</button>
+  </div>
+
+<script>
+  const PS = 25;
+  let clientId = null;
+  let currentFilter = 'va_needs_review';
+  let page = 0;
+  let totalLeads = 0;
+  let reviewedCount = 0;
+
+  // ── Init ──
+  async function init() {
+    let resp, clients;
+    try {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 15000);
+      resp = await fetch('/api/clients', { signal: controller.signal });
+      if (resp.status === 401) { window.location.href = '/login?next=/va-review'; return; }
+      clients = await resp.json();
+      if (clients.error) throw new Error(clients.error);
+    } catch (err) {
+      document.getElementById('cardList').innerHTML = '<div class="loading" style="color:#c44a3c;">Error loading: ' + err.message + '<br><br><a href="/login?next=/va-review" style="color:#3b82f6">Try logging in again</a></div>';
+      return;
+    }
+    if (!clients || clients.length === 0) {
+      document.getElementById('cardList').innerHTML = '<div class="loading">No clients found</div>';
+      return;
+    }
+    const sel = document.getElementById('clientSelect');
+    sel.innerHTML = '<option value="all">All Clients — Review Queue</option>' + clients.map(c => `<option value="${c.customer_id}">${c.name}</option>`).join('');
+
+    // Check URL for client ID
+    const pathParts = window.location.pathname.split('/');
+    const urlClientId = pathParts[2];
+    if (urlClientId && clients.find(c => String(c.customer_id) === urlClientId)) {
+      sel.value = urlClientId;
+    }
+
+    clientId = sel.value || 'all';
+    // Default to "Need Review" filter for all-clients view
+    if (clientId === 'all') {
+      currentFilter = 'va_needs_review';
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      var nrBtn = document.querySelector('.filter-btn.urgent');
+      if (nrBtn) nrBtn.classList.add('active');
+    }
+    sel.addEventListener('change', () => { clientId = sel.value; page = 0; loadLeads(); });
+
+    // Filter buttons
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentFilter = btn.dataset.filter;
+        page = 0;
+        loadLeads();
+      });
+    });
+
+    loadLeads();
+  }
+
+  // ── Load leads ──
+  async function loadLeads() {
+    const list = document.getElementById('cardList');
+    list.innerHTML = '<div class="loading">Loading leads...</div>';
+
+    // Client flags uses a different endpoint
+    if (currentFilter === 'client_flags') {
+      return loadClientFlags();
+    }
+
+    const params = new URLSearchParams({ limit: PS, offset: page * PS, filter: currentFilter });
+    let data;
+    try {
+      const resp = await fetch(`/api/audit/${clientId}/leads?${params}`);
+      if (resp.status === 401) { window.location.href = '/login?next=/va-review'; return; }
+      data = await resp.json();
+      if (data.error) { list.innerHTML = '<div class="loading">Error: ' + data.error + '</div>'; return; }
+    } catch (err) {
+      list.innerHTML = '<div class="loading">Error loading leads: ' + err.message + '</div>';
+      return;
+    }
+
+    totalLeads = data.total || 0;
+    const items = data.items || [];
+
+    // Update progress
+    await updateProgress();
+
+    // Update needs review count + client flags count
+    if (currentFilter !== 'va_needs_review') {
+      const nr = await fetch(`/api/audit/${clientId}/leads?limit=1&filter=va_needs_review`).then(r => r.json());
+      document.getElementById('needsBtn').textContent = `${nr.total || 0} Need Review`;
+    } else {
+      document.getElementById('needsBtn').textContent = `${totalLeads} Need Review`;
+    }
+    updateClientFlagsCount();
+
+    // Pagination
+    const totalPages = Math.ceil(totalLeads / PS);
+    const nav = document.getElementById('pageNav');
+    nav.style.display = totalPages > 1 ? '' : 'none';
+    document.getElementById('pageInfo').textContent = `Page ${page + 1} of ${totalPages || 1}`;
+    document.getElementById('prevBtn').disabled = page === 0;
+    document.getElementById('nextBtn').disabled = page >= totalPages - 1;
+
+    if (items.length === 0) {
+      list.innerHTML = currentFilter === 'needs_review'
+        ? '<div class="empty"><h2>All caught up!</h2><p>No leads need review for this client.</p></div>'
+        : '<div class="empty"><p>No leads match this filter.</p></div>';
+      return;
+    }
+
+    list.innerHTML = '';
+    for (const lead of items) {
+      list.appendChild(buildCard(lead));
+    }
+  }
+
+  async function updateProgress() {
+    const [needsData, approvedData] = await Promise.all([
+      fetch(`/api/audit/${clientId}/leads?limit=1&filter=va_needs_review`).then(r => r.json()),
+      fetch(`/api/audit/${clientId}/leads?limit=1&filter=approved`).then(r => r.json()),
+    ]);
+    const needsReview = needsData.total || 0;
+    const approved = approvedData.total || 0;
+    const total = needsReview + approved;
+    const pct = total > 0 ? Math.round((approved / total) * 100) : 0;
+    document.getElementById('progressFill').style.width = pct + '%';
+    document.getElementById('progressLabel').textContent = `${approved} reviewed · ${needsReview} remaining`;
+  }
+
+  async function updateClientFlagsCount() {
+    try {
+      const cfParams = new URLSearchParams({ customer_id: clientId, limit: 1, offset: 0 });
+      const cfResp = await fetch(`/api/audit/client-flags?${cfParams}`);
+      const cfData = await cfResp.json();
+      document.getElementById('clientFlagsBtn').textContent = `${cfData.total || 0} Client Flags`;
+    } catch (e) { /* silent */ }
+  }
+
+  async function loadClientFlags() {
+    const list = document.getElementById('cardList');
+    const cfParams = new URLSearchParams({ customer_id: clientId, limit: PS, offset: page * PS });
+    let data;
+    try {
+      const resp = await fetch(`/api/audit/client-flags?${cfParams}`);
+      if (resp.status === 401) { window.location.href = '/login?next=/va-review'; return; }
+      data = await resp.json();
+      if (data.error) { list.innerHTML = '<div class="loading">Error: ' + data.error + '</div>'; return; }
+    } catch (err) {
+      list.innerHTML = '<div class="loading">Error loading flags: ' + err.message + '</div>';
+      return;
+    }
+
+    totalLeads = data.total || 0;
+    const items = data.items || [];
+
+    // Update button counts
+    const nr = await fetch(`/api/audit/${clientId}/leads?limit=1&filter=va_needs_review`).then(r => r.json());
+    document.getElementById('needsBtn').textContent = `${nr.total || 0} Need Review`;
+    document.getElementById('clientFlagsBtn').textContent = `${totalLeads} Client Flags`;
+
+    // Pagination
+    const totalPages = Math.ceil(totalLeads / PS);
+    const nav = document.getElementById('pageNav');
+    nav.style.display = totalPages > 1 ? '' : 'none';
+    document.getElementById('pageInfo').textContent = `Page ${page + 1} of ${totalPages || 1}`;
+    document.getElementById('prevBtn').disabled = page === 0;
+    document.getElementById('nextBtn').disabled = page >= totalPages - 1;
+
+    if (items.length === 0) {
+      list.innerHTML = '<div class="empty"><p>No client flags found.</p></div>';
+      return;
+    }
+
+    list.innerHTML = '';
+    for (const flag of items) {
+      list.appendChild(buildFlagCard(flag));
+    }
+  }
+
+  function buildFlagCard(f) {
+    const card = document.createElement('div');
+    card.className = 'lead-card is-flagged';
+
+    const reasonLabels = {
+      'not_google_ads': 'Not Google Ads',
+      'spam': 'Spam',
+      'out_of_area': 'Out of Area',
+      'wrong_service': 'Wrong Service',
+      'wrong_person': 'Wrong Person',
+      'wrong_revenue': 'Wrong Revenue',
+      'duplicate': 'Duplicate',
+      'other': 'Other'
+    };
+
+    const reasonLabel = reasonLabels[f.reason] || f.reason || 'Unknown';
+    const date = f.performed_at ? new Date(f.performed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—';
+    const isMatched = !!f.hcp_customer_id;
+    const leadName = f.lead_name || 'Unmatched Lead';
+    const clientName = f.client_name || 'Unknown Client';
+    const flaggedBy = f.performed_by || 'Unknown';
+    const reviewStatus = f.review_status;
+    const isResolved = reviewStatus && ['confirmed','overridden','resolved'].includes(reviewStatus);
+
+    card.innerHTML = `
+      <div class="card-header" style="cursor:default">
+        <div>
+          <div class="card-name">${esc(leadName)} <span class="badge badge-amber">${esc(reasonLabel)}</span>${isMatched ? '<span class="badge badge-blue">Matched</span>' : '<span class="badge badge-gray">Unmatched</span>'}${isResolved ? '<span class="badge badge-green">Resolved</span>' : ''}</div>
+          <div class="card-meta">${date} · ${esc(clientName)} · Flagged by ${esc(flaggedBy)}</div>
+        </div>
+      </div>
+      <div class="card-detail" style="display:block;padding:0 18px 14px">
+        <div class="detail-box" style="margin-top:0">
+          <div class="detail-row"><span class="label">Reason</span><span class="value">${esc(reasonLabel)}</span></div>
+          ${f.notes ? '<div class="detail-row"><span class="label">Notes</span><span class="value" style="white-space:pre-wrap">' + esc(f.notes) + '</span></div>' : ''}
+          ${f.hcp_customer_id ? '<div class="detail-row"><span class="label">HCP ID</span><span class="value">' + esc(f.hcp_customer_id) + '</span></div>' : ''}
+        </div>
+      </div>
+    `;
+    return card;
+  }
+
+  function changePage(delta) {
+    page += delta;
+    loadLeads();
+  }
+
+  // ── Build card ──
+  function buildCard(r) {
+    const card = document.createElement('div');
+    const isLeadOnly = r.lead_status === 'lead_only';
+    const isApproved = ['confirmed','approved','overridden','resolved'].includes(r.review_status);
+    const isFlagged = r.review_status === 'flagged';
+
+    const issues = [];
+    // Structural issues from record counts
+    if (r.insp_count > 1 && r.insp_addr_count > 1) issues.push('Multiple inspections at different addresses');
+    else if (r.insp_count > 1) issues.push('Multiple inspections at same address — may be segments of one project');
+    if (r.est_count > 1) issues.push('Multiple estimates — may need to be combined');
+    if (r.job_count > 1 && r.job_addr_count > 1) issues.push('Multiple jobs at different addresses');
+    else if (r.job_count > 1) issues.push('Multiple jobs at same address — may be segments of one project');
+    if (r.roas_revenue == 0 && r.job_count > 0) issues.push('Job found but $0 revenue — amount may be missing');
+    // DB exception flags
+    const flags = r.exception_flags || [];
+    if (flags.includes('missing_funnel_step')) issues.push('Missing funnel step — lead may be missing an inspection, estimate, or job');
+    if (flags.includes('job_no_estimate')) issues.push('Job exists without an estimate — estimate may be missing or this is a direct job');
+    if (flags.includes('segment_revenue_suspicious')) issues.push('Segment revenue looks off — check job/invoice amounts');
+    if (flags.includes('classification_fallback')) issues.push('Classification uncertain — lead type was auto-guessed, verify if correct');
+    if (flags.includes('name_mismatch')) issues.push('Name mismatch — CallRail and HCP names don\'t match, verify this is the same person');
+    if (flags.includes('pre_lead')) issues.push('Pre-existing customer — HCP record created 7+ days before first ad click. Revenue may not be attributable to Google Ads');
+    const hasIssues = issues.length > 0;
+
+    card.className = 'lead-card' + (hasIssues ? ' has-issue' : '') + (isApproved ? ' is-approved' : '') + (isFlagged ? ' is-flagged' : '') + (isLeadOnly ? ' lead-only' : '');
+
+    const name = `${r.first_name || ''} ${r.last_name || ''}`.trim() || 'Unknown';
+    const srcLabel = r.lead_source_type === 'google_ads' ? 'Google Ads' : r.lead_source_type === 'lsa' ? 'LSA' : r.lead_source_type || 'Unknown';
+    const srcClass = r.lead_source_type === 'google_ads' ? 'badge-green' : r.lead_source_type === 'lsa' ? 'badge-blue' : 'badge-gray';
+    const revenue = r.roas_revenue > 0 ? '$' + Number(r.roas_revenue).toLocaleString() : '—';
+    const revClass = r.roas_revenue > 0 ? 'has-value' : '';
+    const date = r.callrail_date ? new Date(r.callrail_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
+    const statusBadge = isApproved ? '<span class="badge badge-green">✓ Approved</span>' : isFlagged ? '<span class="badge badge-amber">⚑ Flagged</span>' : hasIssues ? '<span class="badge badge-red">Issue</span>' : '';
+    const leadOnlyBadge = isLeadOnly ? '<span class="badge badge-amber">Lead Only</span>' : '';
+    const preLeadBadge = flags.includes('pre_lead') ? '<span class="badge badge-amber">Pre-lead</span>' : '';
+
+    card.innerHTML = `
+      <div class="card-header">
+        <div>
+          <div class="card-name">${esc(name)} <span class="badge ${srcClass}">${srcLabel}</span>${statusBadge}${leadOnlyBadge}${preLeadBadge}</div>
+          <div class="card-meta">${date} · ${r.phone_primary || '—'} · ${r.match_method || 'no match'}</div>
+        </div>
+        <div class="card-right">
+          <div class="card-revenue ${revClass}">${revenue}</div>
+          <div class="card-meta">${r.roas_revenue > 0 ? 'ROAS Revenue' : isLeadOnly ? 'No HCP match' : 'No revenue yet'}</div>
+        </div>
+      </div>
+      <div class="card-detail"></div>
+    `;
+
+    card.querySelector('.card-header').addEventListener('click', () => {
+      if (card.classList.contains('open')) {
+        card.classList.remove('open');
+      } else {
+        // Close others
+        document.querySelectorAll('.lead-card.open').forEach(c => c.classList.remove('open'));
+        card.classList.add('open');
+        if (!isLeadOnly) loadDetail(card, r.hcp_customer_id, issues);
+      }
+    });
+
+    return card;
+  }
+
+  // ── Load detail ──
+  async function loadDetail(card, hcpId, issues) {
+    const detail = card.querySelector('.card-detail');
+    detail.innerHTML = '<div class="loading">Loading...</div>';
+
+    const d = await fetch(`/api/lead/${hcpId}`).then(r => r.json());
+    const c = d.customer;
+    const cr = d.callrail;
+
+    let html = '';
+
+    // Issues in plain English
+    if (issues.length > 0) {
+      html += '<div class="issue-box"><h4>Needs Attention</h4>';
+      issues.forEach(issue => { html += `<p>• ${issue}</p>`; });
+      html += '</div>';
+    }
+
+    const activeInsps = d.inspections.filter(i => i.record_status === 'active');
+    const activeJobs = d.jobs.filter(j => j.record_status === 'active');
+    const activeEsts = d.estimates.filter(e => e.record_status === 'active');
+    const inspIssue = activeInsps.length > 1;
+    const estIssue = activeEsts.length > 1;
+    const jobIssue = activeJobs.length > 1;
+
+    // Detail grid
+    html += '<div class="detail-grid">';
+    html += `<div class="detail-box"><h4>Lead Info</h4>
+      <div class="detail-row"><span class="label">Phone</span><span class="value">${c.phone_primary || '—'}</span></div>
+      <div class="detail-row"><span class="label">Email</span><span class="value">${c.email || '—'}</span></div>
+      <div class="detail-row"><span class="label">Source</span><span class="value">${cr ? (cr.gclid ? 'Google Ads (GCLID)' : cr.classified_source || cr.source || '—') : '—'}</span></div>
+      <div class="detail-row"><span class="label">Lead Date</span><span class="value">${cr ? fmtDate(cr.start_time) : '—'}</span></div>
+    </div>`;
+
+    const allInsps = d.inspections.filter(i => i.record_status !== 'excluded');
+    const allEsts = d.estimates.filter(e => e.record_status !== 'excluded');
+    const allJobs = d.jobs.filter(j => j.record_status !== 'excluded');
+    const estSent = allEsts.length;
+    const estApproved = allEsts.filter(e => e.status === 'approved').length;
+    const inspCompleted = allInsps.filter(i => ['complete rated','complete unrated'].includes(i.status)).length;
+    const jobsCompleted = allJobs.filter(j => ['complete rated','complete unrated'].includes(j.status)).length;
+
+    html += `<div class="detail-box"><h4>Pipeline</h4>
+      <div class="detail-row"><span class="label">HCP Created</span><span class="value">${c.hcp_created_at ? fmtDate(c.hcp_created_at) : '—'}</span></div>
+      <div class="detail-row"><span class="label">Inspections</span><span class="value">${allInsps.length} (${inspCompleted} completed)</span></div>
+      <div class="detail-row"><span class="label">Estimates</span><span class="value">${estSent} sent (${estApproved} approved)</span></div>
+      <div class="detail-row"><span class="label">Jobs</span><span class="value">${allJobs.length} (${jobsCompleted} completed)</span></div>
+      <div class="detail-row"><span class="label">Invoices</span><span class="value">${d.invoices.length}</span></div>
+    </div>`;
+    html += '</div>';
+
+    // Inspections
+    if (activeInsps.length) {
+      html += `<div class="detail-box${inspIssue ? ' has-issue' : ''}" data-type="inspections" data-hcpid="${hcpId}"><h4>Inspections${inspIssue ? ' ⚠ Tap items to group, or choose an action below' : ''}</h4><div class="sub-items">`;
+      activeInsps.forEach(i => {
+        const amt = (i.total_amount_cents || 0) / 100;
+        const addr = i.service_address || '';
+        const excluded = i.count_revenue === false;
+        const iDate = i.scheduled_at || i.completed_at || i.synced_at;
+        const iDesc = i.description || '';
+        html += `<div class="sub-item${inspIssue ? ' flagged selectable' : ''}${excluded ? ' excluded' : ''}" data-id="${i.hcp_id}"><span>${fmtDate(iDate)} · ${esc(addr || 'No address')} <span class="badge badge-${statColor(i.status)}">${friendlyStatus(i.status)}</span> <span class="type-pill pill-inspection" onclick="event.stopPropagation(); reclassifyRecord('inspection', '${i.hcp_id}', this)" title="Click to reclassify as job">inspection ↔</span></span><span class="amount"><input type="checkbox" class="revenue-toggle" title="Count revenue" ${excluded ? '' : 'checked'} onchange="toggleRevenue('inspections', '${i.hcp_id}', this)">${amt > 0 ? '$' + amt.toLocaleString() : '—'}</span>${iDesc ? `<div class="sub-desc">${esc(iDesc)}</div>` : ''}</div>`;
+      });
+      if (inspIssue) {
+        html += `<div class="inline-actions">
+          <button class="btn-group" disabled onclick="confirmGroup(this)">Group Selected (0)</button>
+          <button class="question-btn" onclick="handleKeepSeparate('inspections', '${hcpId}', this)">All separate → Keep as-is</button>
+          <button class="question-btn" onclick="handleFlag('inspections', '${hcpId}', this)">Not sure → Flag</button>
+        </div>`;
+      }
+      html += '</div></div>';
+    }
+
+    // Estimates
+    if (activeEsts.length) {
+      html += `<div class="detail-box${estIssue ? ' has-issue' : ''}" style="margin-top:8px" data-type="estimates" data-hcpid="${hcpId}"><h4>Estimates${estIssue ? ' ⚠ Tap items to group, or choose an action below' : ''}</h4><div class="sub-items">`;
+      activeEsts.forEach(e => {
+        const amt = (e.highest_option_cents || 0) / 100;
+        const addr = e.service_address || '';
+        const addrStr = addr ? esc(addr) + ' · ' : '';
+        const excluded = e.count_revenue === false;
+        const eType = e.estimate_type || 'treatment';
+        const optNames = (e.options || []).map(o => o.name).filter(n => n && !n.match(/^Option #?\d+$/i)).join(', ');
+        html += `<div class="sub-item${estIssue ? ' flagged selectable' : ''}${excluded ? ' excluded' : ''}" data-id="${e.hcp_estimate_id}"><span>${fmtDate(e.sent_at || e.approved_at || e.synced_at)} · ${addrStr}${eType} <span class="badge badge-${statColor(e.status)}">${friendlyStatus(e.status)}</span></span><span class="amount"><input type="checkbox" class="revenue-toggle" title="Count revenue" ${excluded ? '' : 'checked'} onchange="toggleRevenue('estimates', '${e.hcp_estimate_id}', this)">${amt > 0 ? '$' + amt.toLocaleString() : '—'}</span>${optNames ? `<div class="sub-desc">${esc(optNames)}</div>` : ''}</div>`;
+      });
+      if (estIssue) {
+        html += `<div class="inline-actions">
+          <button class="btn-group" disabled onclick="confirmGroup(this)">Group Selected (0)</button>
+          <button class="question-btn" onclick="handleKeepSeparate('estimates', '${hcpId}', this)">All separate → Keep as-is</button>
+          <button class="question-btn" onclick="handleFlag('estimates', '${hcpId}', this)">Not sure → Flag</button>
+        </div>`;
+      }
+      html += '</div></div>';
+    }
+
+    // Jobs
+    if (activeJobs.length) {
+      html += `<div class="detail-box${jobIssue ? ' has-issue' : ''}" style="margin-top:8px" data-type="jobs" data-hcpid="${hcpId}"><h4>Jobs${jobIssue ? ' ⚠ Tap items to group, or choose an action below' : ''}</h4><div class="sub-items">`;
+      activeJobs.forEach(j => {
+        const amt = (j.total_amount_cents || 0) / 100;
+        const addr = j.service_address || '';
+        const excluded = j.count_revenue === false;
+        const jDate = j.scheduled_at || j.completed_at || j.synced_at;
+        const jDesc = j.description || '';
+        html += `<div class="sub-item${jobIssue ? ' flagged selectable' : ''}${excluded ? ' excluded' : ''}" data-id="${j.hcp_job_id}"><span>${fmtDate(jDate)} · ${esc(addr || 'No address')} <span class="badge badge-${statColor(j.status)}">${friendlyStatus(j.status)}</span> <span class="type-pill pill-job" onclick="event.stopPropagation(); reclassifyRecord('job', '${j.hcp_job_id}', this)" title="Click to reclassify as inspection">job ↔</span></span><span class="amount"><input type="checkbox" class="revenue-toggle" title="Count revenue" ${excluded ? '' : 'checked'} onchange="toggleRevenue('jobs', '${j.hcp_job_id}', this)">${amt > 0 ? '$' + amt.toLocaleString() : '—'}</span>${jDesc ? `<div class="sub-desc">${esc(jDesc)}</div>` : ''}</div>`;
+      });
+      if (jobIssue) {
+        html += `<div class="inline-actions">
+          <button class="btn-group" disabled onclick="confirmGroup(this)">Group Selected (0)</button>
+          <button class="question-btn" onclick="handleKeepSeparate('jobs', '${hcpId}', this)">All separate → Keep as-is</button>
+          <button class="question-btn" onclick="handleFlag('jobs', '${hcpId}', this)">Not sure → Flag</button>
+        </div>`;
+      }
+      html += '</div></div>';
+    }
+
+    // Invoices
+    if (d.invoices.length) {
+      html += '<div class="detail-box" style="margin-top:8px"><h4>Invoices</h4><div class="sub-items">';
+      d.invoices.forEach(inv => {
+        const amt = (inv.amount_cents || 0) / 100;
+        html += `<div class="sub-item"><span>${fmtDate(inv.invoice_date)} · #${inv.invoice_number || '—'} <span class="badge badge-${statColor(inv.status)}">${friendlyStatus(inv.status)}</span></span><span class="amount">$${amt.toLocaleString()}</span></div>`;
+      });
+      html += '</div></div>';
+    }
+
+    // Source override
+    const currentSource = c.attribution_override || (cr?.gclid ? 'google_ads' : cr?.classified_source || 'unknown');
+    const sources = ['google_ads', 'google_business_profile', 'lsa', 'referral', 'direct', 'other'];
+    const sourceLabels = { google_ads: 'Google Ads', google_business_profile: 'Google Business', lsa: 'LSA', referral: 'Referral', direct: 'Direct', other: 'Other' };
+    html += `<div class="source-selector"><label>Lead Source (change if needed)</label><div class="source-options" id="sources_${hcpId}">`;
+    sources.forEach(s => {
+      html += `<div class="source-opt ${s === currentSource ? 'selected' : ''}" data-source="${s}" onclick="selectSource(this, '${hcpId}')">${sourceLabels[s] || s}</div>`;
+    });
+    html += '</div></div>';
+
+    // Actions
+    html += `<div class="actions">
+      <button class="btn btn-approve" onclick="approveCard('${hcpId}', this)">✓ Approve — Looks Good</button>
+      <button class="btn btn-flag" onclick="flagCard('${hcpId}', this)">⚑ Flag for Manager</button>
+      <button class="btn btn-skip" onclick="this.closest('.lead-card').classList.remove('open')">Skip</button>
+    </div>`;
+
+    detail.innerHTML = html;
+
+    // Stop checkbox clicks from toggling card open/close or interfering with selection
+    detail.querySelectorAll('.revenue-toggle').forEach(cb => {
+      cb.addEventListener('click', e => e.stopPropagation());
+    });
+
+    // Attach selection listeners to all selectable items
+    detail.querySelectorAll('.sub-item.selectable').forEach(item => {
+      item.addEventListener('click', toggleSelectItem);
+    });
+  }
+
+  async function toggleEstimateType(el, estimateId) {
+    const current = el.textContent.trim();
+    const newType = current === 'treatment' ? 'inspection' : 'treatment';
+    el.textContent = newType;
+    el.style.color = '#3b82f6';
+    await fetch('/api/review/toggle-revenue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ table: 'estimates', record_id: estimateId, count_revenue: true, performed_by: 'VA' }),
+    });
+    // Update estimate_type directly
+    await fetch('/api/review/reclassify-estimate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hcp_estimate_id: estimateId, estimate_type: newType, performed_by: 'VA' }),
+    });
+    setTimeout(() => { el.style.color = ''; }, 500);
+  }
+
+  async function reclassifyRecord(currentType, recordId, el) {
+    const newType = currentType === 'job' ? 'inspection' : 'job';
+    if (!confirm(`Reclassify this ${currentType} as ${newType}?`)) return;
+    el.textContent = newType + ' ↔';
+    el.className = `type-pill pill-${newType}`;
+    const endpoint = currentType === 'job' ? '/api/review/reclassify-to-inspection' : '/api/review/reclassify-to-job';
+    const body = currentType === 'job'
+      ? { hcp_job_id: recordId, performed_by: 'VA', reason: 'Reclassified via VA review' }
+      : { hcp_inspection_id: recordId, performed_by: 'VA', reason: 'Reclassified via VA review' };
+    await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    // Move the item to the target section
+    const item = el.closest('.sub-item');
+    const sourceBox = item.closest('.detail-box');
+    const targetType = newType === 'job' ? 'jobs' : 'inspections';
+    const targetBox = item.closest('.card-detail').querySelector(`.detail-box[data-type="${targetType}"]`);
+
+    // Animate out of source
+    item.style.transition = 'all 0.3s';
+    item.style.opacity = '0';
+    item.style.maxHeight = item.offsetHeight + 'px';
+
+    setTimeout(() => {
+      // Remove from source
+      item.remove();
+
+      // Update pill to reflect new type and re-bind click
+      el.textContent = newType + ' ↔';
+      el.className = `type-pill pill-${newType}`;
+      el.setAttribute('onclick', `event.stopPropagation(); reclassifyRecord('${newType}', '${recordId}', this)`);
+      el.title = `Click to reclassify as ${currentType}`;
+
+      // Reset item styling
+      item.classList.remove('flagged', 'selectable', 'kept-separate');
+      item.style.opacity = '';
+      item.style.maxHeight = '';
+      item.style.transition = '';
+
+      // Add description noting the move
+      const descEl = item.querySelector('.sub-desc');
+      const moveNote = `Moved from ${currentType}s`;
+      if (descEl) {
+        if (!descEl.textContent.includes('Moved from')) descEl.textContent = moveNote + ' · ' + descEl.textContent;
+      } else {
+        item.insertAdjacentHTML('beforeend', `<div class="sub-desc">${moveNote}</div>`);
+      }
+
+      if (targetBox) {
+        // Insert into target section's sub-items, before the inline-actions
+        const targetItems = targetBox.querySelector('.sub-items');
+        const actionsDiv = targetItems.querySelector('.inline-actions');
+        if (actionsDiv) {
+          targetItems.insertBefore(item, actionsDiv);
+        } else {
+          targetItems.appendChild(item);
+        }
+        // Flash highlight
+        item.style.transition = 'background 0.5s';
+        item.style.background = '#dbeafe';
+        setTimeout(() => { item.style.background = ''; }, 800);
+      } else {
+        // No target section exists yet — create one
+        const sectionLabel = newType === 'job' ? 'Jobs' : 'Inspections';
+        const newSection = document.createElement('div');
+        newSection.className = 'detail-box';
+        newSection.dataset.type = targetType;
+        newSection.dataset.hcpid = sourceBox.dataset.hcpid;
+        newSection.style.marginTop = '8px';
+        newSection.innerHTML = `<h4>${sectionLabel}</h4><div class="sub-items"></div>`;
+        newSection.querySelector('.sub-items').appendChild(item);
+        // Insert after the source box
+        sourceBox.parentElement.insertBefore(newSection, sourceBox.nextSibling);
+        item.style.transition = 'background 0.5s';
+        item.style.background = '#dbeafe';
+        setTimeout(() => { item.style.background = ''; }, 800);
+      }
+    }, 300);
+  }
+
+  async function toggleRevenue(table, recordId, checkbox) {
+    const countRevenue = checkbox.checked;
+    const item = checkbox.closest('.sub-item');
+    item.classList.toggle('excluded', !countRevenue);
+
+    await fetch('/api/review/toggle-revenue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ table, record_id: recordId, count_revenue: countRevenue, performed_by: 'VA' }),
+    });
+  }
+
+  // ── Actions ──
+  function selectSource(el, hcpId) {
+    el.parentElement.querySelectorAll('.source-opt').forEach(o => o.classList.remove('selected'));
+    el.classList.add('selected');
+    // Save immediately
+    const source = el.dataset.source;
+    fetch('/api/review/override-attribution', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hcp_customer_id: hcpId, performed_by: 'VA', override_to: source, reason: 'VA review' }),
+    });
+  }
+
+  function checkAutoApprove(detailBox) {
+    const card = detailBox.closest('.lead-card');
+    const hcpId = card.querySelector('[data-hcpid]')?.dataset.hcpid
+      || detailBox.dataset.hcpid;
+    // Check if all issue sections are resolved (no more has-issue boxes)
+    const unresolvedSections = card.querySelectorAll('.detail-box.has-issue');
+    if (unresolvedSections.length === 0 && hcpId) {
+      // All issues resolved — auto-approve after a brief delay so VA sees the green
+      setTimeout(async () => {
+        await fetch('/api/review/approve-lead', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hcp_customer_id: hcpId, performed_by: 'VA', notes: 'Auto-approved after resolving all issues' }),
+        });
+        removeCard(card);
+      }, 800);
+    }
+  }
+
+  function removeCard(card) {
+    card.style.transition = 'all 0.3s ease';
+    card.style.opacity = '0';
+    card.style.maxHeight = card.offsetHeight + 'px';
+    card.style.overflow = 'hidden';
+    setTimeout(() => {
+      card.style.maxHeight = '0';
+      card.style.padding = '0';
+      card.style.margin = '0';
+      card.style.border = 'none';
+    }, 150);
+    setTimeout(() => {
+      card.remove();
+      // If list is empty, show completion or load next page
+      const remaining = document.querySelectorAll('#cardList .lead-card').length;
+      if (remaining === 0) {
+        totalLeads -= PS;
+        if (totalLeads > 0) {
+          loadLeads(); // Load next batch
+        } else {
+          document.getElementById('cardList').innerHTML = '<div class="empty"><h2>All caught up!</h2><p>No more leads need review for this client.</p></div>';
+        }
+      }
+    }, 400);
+    updateProgress();
+    // Update needs review count
+    const needsBtn = document.getElementById('needsBtn');
+    const currentCount = parseInt(needsBtn.textContent) || 0;
+    if (currentCount > 0) needsBtn.textContent = `${currentCount - 1} Need Review`;
+  }
+
+  async function approveCard(hcpId, btn) {
+    btn.textContent = 'Approving...';
+    btn.disabled = true;
+    await fetch('/api/review/approve-lead', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hcp_customer_id: hcpId, performed_by: 'VA', notes: 'Approved via VA review' }),
+    });
+    removeCard(btn.closest('.lead-card'));
+  }
+
+  async function flagCard(hcpId, btn) {
+    const notes = prompt('Optional note for the manager:') || '';
+    btn.textContent = 'Flagging...';
+    btn.disabled = true;
+    await fetch('/api/review/flag-for-manager', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hcp_customer_id: hcpId, performed_by: 'VA', notes }),
+    });
+    removeCard(btn.closest('.lead-card'));
+  }
+
+  // ── Grouping system ──
+  let groupNumber = 0;
+
+  function startGrouping(btn) {
+    const detailBox = btn.closest('.detail-box');
+    const actionsDiv = btn.closest('.inline-actions');
+    const items = detailBox.querySelectorAll('.sub-item:not(.grouped)');
+
+    // Enter selection mode
+    actionsDiv.innerHTML = `
+      <div class="grouping-hint">Tap 2+ items to select a group, then click "Group Selected"</div>
+      <button class="btn-group" disabled onclick="confirmGroup(this)">Group Selected (0)</button>
+      <button class="btn-group-done" style="display:none" onclick="finishGrouping(this)">✓ Done Grouping</button>
+      <button class="btn-group-cancel" onclick="cancelGrouping(this)">Cancel</button>
+    `;
+
+    items.forEach(item => {
+      item.classList.add('selectable');
+      item.classList.remove('flagged');
+      item.addEventListener('click', toggleSelectItem);
+    });
+  }
+
+  function toggleSelectItem(e) {
+    const item = e.currentTarget;
+    if (item.classList.contains('grouped')) return;
+    item.classList.toggle('selected-for-group');
+    // Update count
+    const detailBox = item.closest('.detail-box');
+    const selected = detailBox.querySelectorAll('.selected-for-group').length;
+    const groupBtn = detailBox.querySelector('.btn-group');
+    if (groupBtn) {
+      groupBtn.disabled = selected < 2;
+      groupBtn.textContent = `Group Selected (${selected})`;
+    }
+  }
+
+  async function confirmGroup(btn) {
+    const detailBox = btn.closest('.detail-box');
+    const type = detailBox.dataset.type;
+    const hcpId = detailBox.dataset.hcpid;
+    const selected = detailBox.querySelectorAll('.selected-for-group');
+    if (selected.length < 2) return;
+
+    btn.textContent = 'Grouping...';
+    btn.disabled = true;
+
+    const ids = Array.from(selected).map(el => el.dataset.id);
+    const mainId = ids[0];
+    const segmentIds = ids.slice(1);
+
+    const endpoint = type === 'jobs' ? '/api/review/jobs-as-segments'
+      : type === 'inspections' ? '/api/review/inspections-as-segments'
+      : '/api/review/estimates-as-options';
+
+    await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ main_id: mainId, segment_ids: segmentIds, performed_by: 'VA', notes: 'Grouped via VA review' }),
+    });
+
+    // Visual: nest the grouped items
+    groupNumber++;
+    const gn = groupNumber;
+    const label = type === 'jobs' ? 'Segment Group' : type === 'estimates' ? 'Option Group' : 'Inspection Group';
+    const groupLabel = document.createElement('div');
+    groupLabel.className = 'group-label';
+    groupLabel.dataset.groupnum = gn;
+    groupLabel.innerHTML = `<span>${label} ${gn}</span><span class="undo-link" onclick="undoGroup(this, '${type}', '${hcpId}', ${JSON.stringify(ids)})">Undo</span>`;
+    selected[0].parentElement.insertBefore(groupLabel, selected[0]);
+
+    selected.forEach((item, idx) => {
+      item.classList.remove('selected-for-group', 'selectable', 'flagged');
+      item.removeEventListener('click', toggleSelectItem);
+      item.classList.add('grouped');
+      item.dataset.groupnum = gn;
+      if (idx === 0) {
+        item.classList.add('parent-item');
+      } else {
+        item.classList.add('resolved', 'nested');
+      }
+    });
+
+    // Check remaining ungrouped items
+    const remaining = detailBox.querySelectorAll('.sub-item:not(.grouped)');
+    const actionsDiv = detailBox.querySelector('.inline-actions');
+    if (remaining.length >= 2) {
+      // Reset for next group selection
+      actionsDiv.innerHTML = `
+        <button class="btn-group" disabled onclick="confirmGroup(this)">Group Selected (0)</button>
+        <button class="btn-group-done" onclick="finishGrouping(this)">✓ Done Grouping</button>
+        <button class="question-btn" onclick="handleKeepSeparate('${type}', '${hcpId}', this)">Keep rest separate</button>
+      `;
+    } else {
+      // All grouped or only 1 left
+      finishGrouping(btn);
+    }
+  }
+
+  function finishGrouping(btn) {
+    const detailBox = btn.closest('.detail-box');
+    const actionsDiv = detailBox.querySelector('.inline-actions');
+
+    // Clean up remaining selectable items
+    detailBox.querySelectorAll('.selectable').forEach(item => {
+      item.classList.remove('selectable', 'selected-for-group');
+      item.removeEventListener('click', toggleSelectItem);
+    });
+
+    detailBox.classList.remove('has-issue');
+    detailBox.classList.add('resolved');
+    detailBox.querySelector('h4').innerHTML = detailBox.querySelector('h4').innerHTML.replace(/⚠.*$/, '✓ Grouped');
+    actionsDiv.innerHTML = `<span style="color:#2d6e46;font-weight:600;font-size:13px">✓ ${groupNumber} group${groupNumber > 1 ? 's' : ''} created</span>`;
+    checkAutoApprove(detailBox);
+  }
+
+  async function undoGroup(undoLink, type, hcpId, ids) {
+    undoLink.textContent = 'Undoing...';
+    const detailBox = undoLink.closest('.detail-box');
+    const gn = undoLink.closest('.group-label').dataset.groupnum;
+
+    // Unnest each non-parent item via API
+    const segmentIds = ids.slice(1);
+    for (const id of segmentIds) {
+      if (type === 'inspections') {
+        await fetch('/api/review/unnest-inspection-segment', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hcp_id: id, performed_by: 'VA' }),
+        });
+      } else if (type === 'jobs') {
+        await fetch('/api/review/unnest-segment', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hcp_job_id: id, performed_by: 'VA' }),
+        });
+      } else if (type === 'estimates') {
+        await fetch('/api/review/unnest-estimate-option', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hcp_estimate_id: id, performed_by: 'VA' }),
+        });
+      }
+    }
+
+    // Visual: restore all items in this group
+    const groupItems = detailBox.querySelectorAll(`.sub-item[data-groupnum="${gn}"]`);
+    groupItems.forEach(item => {
+      item.classList.remove('grouped', 'parent-item', 'resolved', 'nested');
+      item.classList.add('flagged');
+      delete item.dataset.groupnum;
+    });
+
+    // Remove the group label
+    undoLink.closest('.group-label').remove();
+
+    // If section was marked resolved, revert it
+    const remainingGroups = detailBox.querySelectorAll('.group-label');
+    if (remainingGroups.length === 0) {
+      detailBox.classList.remove('resolved');
+      detailBox.classList.add('has-issue');
+      const h4 = detailBox.querySelector('h4');
+      h4.innerHTML = h4.innerHTML.replace(/[✓⚠].*$/, '⚠ Tap items to group, or choose an action below');
+
+      // Restore action buttons with immediate selection mode
+      const actionsDiv = detailBox.querySelector('.inline-actions');
+      if (actionsDiv) {
+        actionsDiv.innerHTML = `
+          <button class="btn-group" disabled onclick="confirmGroup(this)">Group Selected (0)</button>
+          <button class="question-btn" onclick="handleKeepSeparate('${type}', '${hcpId}', this)">All separate → Keep as-is</button>
+          <button class="question-btn" onclick="handleFlag('${type}', '${hcpId}', this)">Not sure → Flag</button>
+        `;
+      }
+    } else {
+      // Still have other groups — re-enter grouping mode for remaining ungrouped items
+      const ungrouped = detailBox.querySelectorAll('.sub-item:not(.grouped)');
+      if (ungrouped.length >= 2) {
+        const actionsDiv = detailBox.querySelector('.inline-actions');
+        if (actionsDiv) {
+          actionsDiv.innerHTML = `
+            <button class="btn-group" disabled onclick="confirmGroup(this)">Group Selected (0)</button>
+            <button class="btn-group-done" onclick="finishGrouping(this)">✓ Done Grouping</button>
+            <button class="question-btn" onclick="handleKeepSeparate('${type}', '${hcpId}', this)">Keep rest separate</button>
+          `;
+          ungrouped.forEach(item => {
+            item.classList.add('selectable');
+            item.classList.remove('flagged');
+            item.addEventListener('click', toggleSelectItem);
+          });
+        }
+      }
+    }
+  }
+
+  function cancelGrouping(btn) {
+    const detailBox = btn.closest('.detail-box');
+    const actionsDiv = detailBox.querySelector('.inline-actions');
+    const type = detailBox.dataset.type;
+    const hcpId = detailBox.dataset.hcpid;
+
+    // Remove selection mode
+    detailBox.querySelectorAll('.selectable, .selected-for-group').forEach(item => {
+      item.classList.remove('selectable', 'selected-for-group');
+      item.classList.add('flagged');
+      item.removeEventListener('click', toggleSelectItem);
+    });
+
+    // Restore original buttons
+    actionsDiv.innerHTML = `
+      <button class="question-btn" onclick="startGrouping(this)">Group these →</button>
+      <button class="question-btn" onclick="handleKeepSeparate('${type}', '${hcpId}', this)">All separate → Keep as-is</button>
+      <button class="question-btn" onclick="handleFlag('${type}', '${hcpId}', this)">Not sure → Flag</button>
+    `;
+  }
+
+  async function handleKeepSeparate(type, hcpId, btn) {
+    const detailBox = btn.closest('.detail-box');
+    const actionsDiv = btn.closest('.inline-actions');
+    const items = detailBox.querySelectorAll('.sub-item');
+
+    btn.textContent = 'Processing...';
+    await fetch('/api/review/dismiss-fragmentation', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hcp_customer_id: hcpId, performed_by: 'VA', flag: `multi_${type}`, notes: 'Different properties — kept separate' }),
+    });
+
+    detailBox.classList.remove('has-issue');
+    detailBox.classList.add('resolved');
+    detailBox.querySelector('h4').innerHTML = detailBox.querySelector('h4').innerHTML.replace(/⚠.*$/, '✓ Kept separate');
+    items.forEach(item => { item.classList.remove('flagged'); item.classList.add('kept-separate'); });
+    actionsDiv.innerHTML = '<span style="color:#2d5a8a;font-weight:600;font-size:13px">✓ Kept as separate items</span>';
+    checkAutoApprove(detailBox);
+  }
+
+  async function handleFlag(type, hcpId, btn) {
+    const detailBox = btn.closest('.detail-box');
+    const actionsDiv = btn.closest('.inline-actions');
+    const items = detailBox.querySelectorAll('.sub-item');
+
+    btn.textContent = 'Processing...';
+    await fetch('/api/review/flag-for-manager', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hcp_customer_id: hcpId, performed_by: 'VA', notes: `VA unsure about ${type} segmentation` }),
+    });
+
+    detailBox.classList.remove('has-issue');
+    detailBox.style.borderColor = '#c4890a';
+    detailBox.querySelector('h4').style.color = '#a87408';
+    detailBox.querySelector('h4').innerHTML = detailBox.querySelector('h4').innerHTML.replace(/⚠.*$/, '⚑ Flagged for Manager');
+    items.forEach(item => { item.classList.remove('flagged'); item.classList.add('flagged-item'); });
+    actionsDiv.innerHTML = '<span style="color:#a87408;font-weight:600;font-size:13px">⚑ Flagged — a manager will review this</span>';
+    checkAutoApprove(detailBox);
+  }
+
+  // ── Helpers ──
+  function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+  function fmtDate(d) { if (!d) return '—'; return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
+  function friendlyStatus(s) {
+    if (!s) return '—';
+    const map = {
+      'complete unrated': 'Completed', 'complete rated': 'Completed',
+      'pro canceled': 'Cancelled', 'user canceled': 'Cancelled',
+      'needs scheduling': 'Needs Scheduling', 'created job from estimate': 'Job Created',
+      'in progress': 'In Progress', 'scheduled': 'Scheduled',
+      'sent': 'Sent', 'approved': 'Approved', 'declined': 'Declined',
+      'paid': 'Paid', 'canceled': 'Cancelled', 'open': 'Open',
+      'voided': 'Voided', 'pending_payment': 'Pending Payment',
+    };
+    return map[s.toLowerCase()] || s;
+  }
+  function statColor(s) {
+    if (!s) return 'gray';
+    s = s.toLowerCase();
+    if (s.includes('complete') || s.includes('approved') || s.includes('paid')) return 'green';
+    if (s.includes('cancel') || s.includes('void') || s.includes('declined')) return 'red';
+    if (s.includes('scheduled') || s.includes('sent') || s.includes('open') || s.includes('progress')) return 'amber';
+    return 'gray';
+  }
+
+  init();
+</script>
+</body>
+</html>

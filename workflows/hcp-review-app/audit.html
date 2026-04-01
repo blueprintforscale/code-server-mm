@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Client Audit</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #f1f5f9; color: #1e293b; font-size: 13px; }
+    a { color: #3b82f6; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .header { background: #1e293b; color: #fff; padding: 0.75rem 1.5rem; display: flex; align-items: center; justify-content: space-between; }
+    .header h1 { font-size: 1.1rem; font-weight: 600; }
+    .header nav a { color: #94a3b8; margin-left: 1.5rem; font-size: 0.8rem; }
+    .header nav a:hover { color: #fff; }
+
+    .toolbar { background: #fff; padding: 0.6rem 1.5rem; border-bottom: 1px solid #e2e8f0; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+    .toolbar select, .toolbar input { padding: 0.35rem 0.5rem; border: 1px solid #cbd5e1; border-radius: 5px; font-size: 0.8rem; }
+    .toolbar label { font-size: 0.65rem; color: #64748b; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+    .filter-group { display: flex; flex-direction: column; gap: 0.2rem; }
+
+    /* Metrics */
+    .metrics { display: flex; gap: 0.75rem; padding: 1rem 1.5rem; flex-wrap: wrap; }
+    .mc { background: #fff; padding: 0.6rem 1rem; border-radius: 6px; box-shadow: 0 1px 2px rgba(0,0,0,.06); min-width: 120px; }
+    .mc .v { font-size: 1.2rem; font-weight: 700; }
+    .mc .l { font-size: 0.6rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
+    .mc .s { font-size: 0.65rem; color: #94a3b8; }
+
+    /* Issue summary bar */
+    .issue-bar { padding: 0.5rem 1.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    .issue-pill { padding: 0.2rem 0.6rem; border-radius: 999px; font-size: 0.7rem; font-weight: 600; cursor: pointer; border: 1px solid transparent; }
+    .issue-pill.active { border-color: #3b82f6; }
+    .issue-pill-warn { background: #fef2f2; color: #dc2626; }
+    .issue-pill-ok { background: #f0fdf4; color: #16a34a; }
+
+    /* Lead table */
+    .table-wrap { padding: 0 1.5rem 1.5rem; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    th { background: #f8fafc; text-align: left; padding: 0.4rem 0.6rem; font-size: 0.65rem; font-weight: 600; color: #64748b; text-transform: uppercase; border-bottom: 1px solid #e2e8f0; position: sticky; top: 0; z-index: 2; }
+    td { padding: 0.4rem 0.6rem; border-bottom: 1px solid #f1f5f9; white-space: nowrap; }
+    .lead-row { cursor: pointer; }
+    .lead-row:hover { background: #f8fafc; }
+    .lead-row.expanded { background: #eff6ff; font-weight: 500; }
+    .lead-row.has-issues td:first-child { border-left: 3px solid #f59e0b; }
+
+    /* Expanded detail rows */
+    .detail-rows td { background: #f8fafc; padding: 0; border: none; }
+    .detail-content { padding: 0.75rem 1rem 0.75rem 2rem; }
+    .detail-section { margin-bottom: 0.75rem; }
+    .detail-section h4 { font-size: 0.7rem; font-weight: 600; color: #64748b; text-transform: uppercase; margin-bottom: 0.3rem; }
+
+    .sub-table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
+    .sub-table th { padding: 0.25rem 0.5rem; font-size: 0.6rem; background: #f1f5f9; position: static; }
+    .sub-table td { padding: 0.25rem 0.5rem; background: #fff; border-bottom: 1px solid #f1f5f9; white-space: normal; }
+    .sub-table tr.dimmed { opacity: 0.4; }
+
+    /* Badges & tags */
+    .tag { display: inline-block; padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.65rem; font-weight: 500; }
+    .tag-green { background: #dcfce7; color: #166534; }
+    .tag-yellow { background: #fef9c3; color: #854d0e; }
+    .tag-red { background: #fef2f2; color: #dc2626; }
+    .tag-blue { background: #dbeafe; color: #1d4ed8; }
+    .tag-gray { background: #f1f5f9; color: #64748b; }
+    .tag-purple { background: #ede9fe; color: #6d28d9; }
+
+    /* Buttons */
+    .btn { padding: 0.2rem 0.5rem; border: none; border-radius: 4px; font-size: 0.7rem; cursor: pointer; font-weight: 500; }
+    .btn:hover { opacity: 0.85; }
+    .btn-blue { background: #3b82f6; color: #fff; }
+    .btn-red { background: #ef4444; color: #fff; }
+    .btn-green { background: #22c55e; color: #fff; }
+    .btn-gray { background: #94a3b8; color: #fff; }
+    .btn-purple { background: #8b5cf6; color: #fff; }
+    .btn-outline { background: #fff; color: #64748b; border: 1px solid #cbd5e1; }
+
+    .actions-row { display: flex; gap: 0.4rem; align-items: center; margin-top: 0.5rem; flex-wrap: wrap; }
+    .actions-row input { padding: 0.2rem 0.4rem; border: 1px solid #cbd5e1; border-radius: 3px; font-size: 0.7rem; width: 200px; }
+
+    .pagination { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 0; font-size: 0.8rem; }
+    .pagination button { padding: 0.3rem 0.7rem; border: 1px solid #cbd5e1; border-radius: 5px; background: #fff; cursor: pointer; font-size: 0.75rem; }
+    .pagination button:disabled { opacity: 0.4; }
+
+    .toast { position: fixed; bottom: 1.5rem; right: 1.5rem; background: #1e293b; color: #fff; padding: 0.6rem 1rem; border-radius: 6px; font-size: 0.8rem; z-index: 200; opacity: 0; transition: opacity 0.3s; }
+    .toast.show { opacity: 1; }
+    .empty { text-align: center; padding: 2rem; color: #94a3b8; }
+
+    /* Reviewer sticky bar */
+    .reviewer { position: fixed; bottom: 0; left: 0; right: 0; background: #fff; border-top: 1px solid #e2e8f0; padding: 0.4rem 1.5rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.75rem; z-index: 10; }
+    .reviewer input { padding: 0.25rem 0.4rem; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 0.75rem; width: 140px; }
+    body { padding-bottom: 2.5rem; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1 id="pageTitle">Client Audit</h1>
+    <nav>
+      <a href="/review">Review Queue</a>
+      <a href="/audit">Audit</a>
+    </nav>
+  </div>
+
+  <div class="toolbar">
+    <div class="filter-group">
+      <label>Client</label>
+      <select id="clientSelect"></select>
+    </div>
+    <div class="filter-group">
+      <label>Filter</label>
+      <select id="filterType">
+        <option value="all">All leads</option>
+        <option value="issues">Has issues only</option>
+        <option value="revenue">Has revenue</option>
+        <option value="no_revenue">No revenue</option>
+      </select>
+    </div>
+    <div class="filter-group">
+      <label>Search</label>
+      <input type="text" id="searchInput" placeholder="Name or phone..." style="width:180px">
+    </div>
+  </div>
+
+  <div class="metrics" id="metrics"></div>
+  <div class="issue-bar" id="issueBar"></div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:30px"></th>
+          <th>Name</th>
+          <th>Insp</th>
+          <th>Est</th>
+          <th>Jobs</th>
+          <th>Lead Date</th>
+          <th>HCP Date</th>
+          <th>ROAS Rev</th>
+          <th>Source</th>
+          <th>Open Est $</th>
+          <th>Issues</th>
+          <th>Status</th>
+          <th>Match</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div class="pagination">
+      <span id="pageInfo"></span>
+      <div>
+        <button id="prevBtn" onclick="changePage(-1)">&larr; Prev</button>
+        <button id="nextBtn" onclick="changePage(1)">Next &rarr;</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="reviewer">
+    <label>Reviewer:</label>
+    <input type="text" id="reviewerName" placeholder="Your name">
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const HCP = 'https://pro.housecallpro.com/pro';
+    let clientId = null;
+    let page = 0;
+    const PS = 50;
+    let expandedId = null;
+    let leadCache = {};
+    let searchTimeout = null;
+
+    function $(s){return document.querySelector(s)}
+    function $$(s){return document.querySelectorAll(s)}
+    function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+    function fmt$(v){return '$'+Math.round(Number(v)||0).toLocaleString()}
+
+    const STATUS_MAP = {
+      'scheduled': { label: 'Scheduled', color: 'blue' },
+      'in progress': { label: 'In Progress', color: 'yellow' },
+      'complete unrated': { label: 'Completed', color: 'green' },
+      'complete rated': { label: 'Completed', color: 'green' },
+      'user canceled': { label: 'Canceled', color: 'red' },
+      'pro canceled': { label: 'Canceled', color: 'red' },
+      'needs scheduling': { label: 'Needs Scheduling', color: 'gray' },
+      'created job from estimate': { label: 'Job Created', color: 'green' },
+      'sent': { label: 'Sent', color: 'blue' },
+      'approved': { label: 'Approved', color: 'green' },
+      'open': { label: 'Open', color: 'yellow' },
+      'paid': { label: 'Paid', color: 'green' },
+      'canceled': { label: 'Canceled', color: 'red' },
+    };
+    function stat(s) {
+      const m = STATUS_MAP[(s||'').toLowerCase()] || { label: s || '-', color: 'gray' };
+      return `<span class="tag tag-${m.color}">${m.label}</span>`;
+    }
+    function hcp(type,id,label){
+      if(!id)return label||'-';
+      const p={customer:'customers',job:'jobs',estimate:'estimates',invoice:'invoices'};
+      return `<a href="${HCP}/${p[type]||type}/${id}" target="_blank" onclick="event.stopPropagation()">${label||'&#x2197;'}</a>`;
+    }
+    function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),3000)}
+    function reviewer(){
+      let n=$('#reviewerName').value.trim();
+      if(!n){n=prompt('Enter your name:');if(n){$('#reviewerName').value=n;localStorage.setItem('rn',n)}}
+      return n;
+    }
+
+    async function init(){
+      $('#reviewerName').value=localStorage.getItem('rn')||'';
+      $('#reviewerName').addEventListener('change',e=>localStorage.setItem('rn',e.target.value));
+
+      console.log('Fetching clients...');
+      const resp=await fetch('/api/clients');
+      console.log('Response status:', resp.status);
+      if(resp.status===401){
+        document.body.innerHTML='<div style="display:flex;justify-content:center;align-items:center;min-height:100vh;background:#f1f5f9"><form method="POST" action="/login?next='+encodeURIComponent(location.pathname)+'" style="background:#fff;padding:2rem;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.1)"><h3>Login Required</h3><input type="password" name="password" placeholder="Password" autofocus style="display:block;margin:0.5rem 0;padding:0.5rem;border:1px solid #cbd5e1;border-radius:4px;width:250px"><button type="submit" style="background:#3b82f6;color:#fff;border:none;padding:0.5rem 1.5rem;border-radius:4px;cursor:pointer">Login</button></form></div>';
+        return;
+      }
+      const clients=await resp.json().catch(e=>{console.error('JSON parse error:',e);return[]});
+      const sel=$('#clientSelect');
+      clients.forEach(c=>{const o=document.createElement('option');o.value=c.customer_id;o.textContent=c.name;sel.appendChild(o)});
+
+      const m=location.pathname.match(/\/audit\/(\d+)/);
+      if(m){
+        sel.value=m[1];
+        // If value didn't match (dropdown not ready), force it
+        if(!sel.value){
+          const opt=document.createElement('option');opt.value=m[1];opt.textContent='Loading...';opt.selected=true;sel.prepend(opt);
+          sel.value=m[1];
+        }
+      }
+
+      sel.addEventListener('change',()=>{clientId=sel.value;page=0;expandedId=null;history.replaceState(null,'','/audit/'+clientId);loadAll()});
+      $('#filterType').addEventListener('change',()=>{page=0;loadLeads()});
+      $('#searchInput').addEventListener('input',()=>{clearTimeout(searchTimeout);searchTimeout=setTimeout(()=>{page=0;loadLeads()},300)});
+
+      if(sel.value){clientId=sel.value;loadAll()}
+    }
+
+    async function loadAll(){
+      if(!clientId)return;
+      loadMetrics();
+      loadLeads();
+    }
+
+    async function loadMetrics(){
+      const d=await fetch(`/api/audit/${clientId}`).then(r=>r.json());
+      const s=d.summary, f=d.funnel;
+      $('#metrics').innerHTML=`
+        <div class="mc"><div class="v">${s.leads}</div><div class="l">GA Leads</div><div class="s">${s.leads_with_revenue} w/revenue</div></div>
+        <div class="mc"><div class="v">${f.inspections}</div><div class="l">Inspections</div><div class="s">${f.inspections_completed} done</div></div>
+        <div class="mc"><div class="v">${f.treatment_estimates}</div><div class="l">Estimates</div><div class="s">${f.estimates_approved} approved</div></div>
+        <div class="mc"><div class="v">${f.jobs}</div><div class="l">Jobs</div><div class="s">${f.jobs_completed} done</div></div>
+        <div class="mc"><div class="v">${fmt$(s.roas_revenue)}</div><div class="l">ROAS Revenue</div><div class="s">inv ${fmt$(s.roas_from_invoices)} / est ${fmt$(s.roas_from_estimates)}</div></div>
+        <div class="mc"><div class="v">${fmt$(s.pipeline_revenue)}</div><div class="l">Open Estimates</div><div class="s">Sent, not approved</div></div>
+      `;
+      // Issue pills
+      const im={};d.issues.forEach(i=>im[i.issue]=+i.count);
+      const total=Object.values(im).reduce((a,b)=>a+b,0);
+      const pills=[
+        ['misclass_insp_to_job','Insp→Job',im.misclass_insp_to_job],
+        ['misclass_job_to_insp','Job→Insp',im.misclass_job_to_insp],
+        ['multi_inspections','Multi Insp',im.multi_inspections],
+        ['multi_jobs','Multi Jobs',im.multi_jobs],
+        ['multi_estimates','Multi Est',im.multi_estimates],
+        ['zero_amount_estimates','$0 Est',im.zero_amount_estimates],
+        ['zero_amount_jobs','$0 Jobs',im.zero_amount_jobs],
+        ['name_mismatch','Name Mismatch',im.name_mismatch],
+        ['job_no_estimate','No Est',im.job_no_estimate],
+      ];
+      $('#issueBar').innerHTML=`<span style="font-size:0.7rem;color:#64748b;font-weight:600">${total} issues:</span>`+
+        pills.map(([k,label,cnt])=>`<span class="issue-pill ${(cnt||0)>0?'issue-pill-warn':'issue-pill-ok'}">${label}: ${cnt||0}</span>`).join('');
+
+      $('#pageTitle').textContent='Audit: '+($('#clientSelect').selectedOptions[0]?.textContent||'');
+    }
+
+    async function loadLeads(){
+      const filter=$('#filterType').value;
+      const search=$('#searchInput').value.trim();
+      const params=new URLSearchParams({limit:PS,offset:page*PS});
+      if(filter)params.set('filter',filter);
+      if(search)params.set('search',search);
+
+      const d=await fetch(`/api/audit/${clientId}/leads?${params}`).then(r=>r.json());
+      const tp=Math.ceil(d.total/PS);
+      $('#pageInfo').textContent=`Page ${page+1} of ${tp||1} (${d.total} leads)`;
+      $('#prevBtn').disabled=page===0;
+      $('#nextBtn').disabled=page>=tp-1;
+
+      const tbody=$('#tbody');
+      tbody.innerHTML='';
+      for(const r of d.items){
+        const issues=[];
+        if(r.insp_count>1)issues.push('multi-insp');
+        if(r.est_count>1)issues.push('multi-est');
+        if(r.job_count>1)issues.push('multi-job');
+        if(r.exception_flags?.includes('name_mismatch'))issues.push('name');
+        if(r.roas_revenue==0&&r.job_count>0)issues.push('$0-job');
+        if(r.hcp_created_at&&r.callrail_date&&new Date(r.hcp_created_at)<new Date(r.callrail_date))issues.push('pre-lead');
+        const hasIssues=issues.length>0;
+
+        const tr=document.createElement('tr');
+        tr.className='lead-row'+(hasIssues?' has-issues':'');
+        tr.dataset.id=r.hcp_customer_id;
+        tr.innerHTML=`
+          <td>${hcp('customer',r.hcp_customer_id)}</td>
+          <td><strong>${esc(r.first_name||'')} ${esc(r.last_name||'')}</strong></td>
+          <td>${r.insp_count}</td>
+          <td>${r.est_count}</td>
+          <td>${r.job_count}</td>
+          <td>${r.callrail_date?new Date(r.callrail_date).toLocaleDateString():'-'}</td>
+          <td>${r.hcp_created_at?new Date(r.hcp_created_at).toLocaleDateString():'-'}${
+            r.hcp_created_at && r.callrail_date && new Date(r.hcp_created_at) < new Date(r.callrail_date)
+            ? ' <span class="tag tag-red" title="HCP created before CallRail lead">!</span>' : ''}</td>
+          <td><strong>${r.roas_revenue>0?fmt$(r.roas_revenue):'-'}</strong></td>
+          <td><span class="tag tag-${r.revenue_source==='none'?'gray':r.revenue_source==='invoice'?'green':r.revenue_source==='approved_estimate'?'blue':'yellow'}">${r.revenue_source}</span></td>
+          <td>${r.pipeline_estimate>0?fmt$(r.pipeline_estimate):'-'}</td>
+          <td>${issues.map(i=>`<span class="tag tag-red">${i}</span>`).join(' ')||'<span class="tag tag-green">ok</span>'}</td>
+          <td><span class="tag tag-${r.review_status==='pending'?'gray':'green'}">${r.review_status}</span></td>
+          <td><span class="tag tag-${r.match_method==='phone'?'green':r.match_method==='email'?'blue':'gray'}">${r.match_method||'-'}</span></td>
+        `;
+        tr.addEventListener('click',()=>toggleExpand(r.hcp_customer_id,tr));
+        tbody.appendChild(tr);
+      }
+    }
+
+    async function toggleExpand(id,clickedTr){
+      // Close existing
+      $$('.detail-rows').forEach(el=>el.remove());
+      $$('.lead-row.expanded').forEach(el=>el.classList.remove('expanded'));
+
+      if(expandedId===id){expandedId=null;return}
+      expandedId=id;
+      clickedTr.classList.add('expanded');
+
+      // Fetch full lead detail
+      const d=await fetch(`/api/lead/${id}`).then(r=>r.json());
+      leadCache[id]=d;
+      const c=d.customer;
+
+      const detailTr=document.createElement('tr');
+      detailTr.className='detail-rows';
+      const td=document.createElement('td');
+      td.colSpan=13;
+
+      let html='<div class="detail-content">';
+
+      // Customer + CallRail
+      html+=`<div class="detail-section"><h4>Customer ${hcp('customer',c.hcp_customer_id,'View in HCP &#x2197;')}</h4>
+        <div style="display:flex;gap:2rem;font-size:0.75rem;flex-wrap:wrap">
+          <span>Phone: <strong>${c.phone_primary||'-'}</strong></span>
+          <span>Email: <strong>${c.email||'-'}</strong></span>
+          <span>HCP Source: ${c.lead_source||'-'}</span>
+          <span>Match: ${c.match_method||'none'}</span>
+        </div>`;
+      if(d.callrail){
+        const cr=d.callrail;
+        html+=`<div style="font-size:0.75rem;margin-top:0.3rem;color:#64748b">CallRail: ${esc(cr.customer_name||'-')} | ${cr.caller_phone||'-'} | GCLID: ${cr.gclid?'Yes':'No'} | Source: ${cr.classified_source||cr.source||'-'}</div>`;
+      }
+      if(c.notes)html+=`<div style="font-size:0.75rem;margin-top:0.3rem;background:#fff;padding:0.3rem;border-radius:3px;max-height:60px;overflow:auto;white-space:pre-wrap">${esc(c.notes)}</div>`;
+      html+=`<div class="actions-row">
+        <button class="btn btn-green" onclick="act('confirm-match','${id}')">Confirm Match</button>
+        <button class="btn btn-red" onclick="act('reject-match','${id}')">Reject Match</button>
+        <button class="btn btn-blue" onclick="override('${id}','google_ads')">Override→GA</button>
+        <button class="btn btn-outline" onclick="override('${id}','not_google_ads')">Not GA</button>
+      </div></div>`;
+
+      // ── Build parent options for dropdowns ──
+      const activeJobs = d.jobs.filter(j=>j.record_status==='active');
+      const activeEsts = d.estimates.filter(e=>e.record_status==='active');
+      const jobParentHtml = activeJobs.map(j=>`<option value="${j.hcp_job_id}">${(j.scheduled_at?new Date(j.scheduled_at).toLocaleDateString():'?')} ${fmt$((j.total_amount_cents||0)/100)}</option>`).join('');
+      const estParentHtml = activeEsts.map(e=>`<option value="${e.hcp_estimate_id}">${(e.sent_at?new Date(e.sent_at).toLocaleDateString():'?')} ${fmt$((e.highest_option_cents||0)/100)}</option>`).join('');
+
+      const ddStyle = 'font-size:0.65rem;padding:0.2rem 0.3rem;border-radius:3px;border:1px solid #cbd5e1';
+
+      function classifyDD(type, recId) {
+        let opts = '';
+        if (type === 'inspection') {
+          opts = `<option value="inspection" selected>Inspection</option><option value="to_job">Reclassify → Job</option><option value="exclude">Exclude</option>`;
+        } else if (type === 'estimate') {
+          opts = `<option value="estimate" selected>Estimate</option>`;
+          if (activeEsts.length > 1) opts += `<option value="option">Option under...</option>`;
+          opts += `<option value="exclude">Exclude</option>`;
+        } else if (type === 'job') {
+          opts = `<option value="job" selected>Job</option><option value="to_inspection">Reclassify → Inspection</option>`;
+          if (activeJobs.length > 1) opts += `<option value="segment">Segment under...</option>`;
+          opts += `<option value="exclude">Exclude</option>`;
+        }
+        let parentDD = '';
+        if (type === 'job' && activeJobs.length > 1)
+          parentDD = `<select class="parent_dd_${id}" data-id="${recId}" style="${ddStyle};display:none;margin-left:3px">${jobParentHtml}</select>`;
+        if (type === 'estimate' && activeEsts.length > 1)
+          parentDD = `<select class="parent_dd_${id}" data-id="${recId}" style="${ddStyle};display:none;margin-left:3px">${estParentHtml}</select>`;
+        return `<select class="classify_dd_${id}" data-id="${recId}" data-type="${type}" style="${ddStyle}">${opts}</select>${parentDD}`;
+      }
+
+      // ── Inspections group ──
+      if (d.inspections.length) {
+        html += `<div class="detail-section"><h4 style="color:#1d4ed8">Inspections (${d.inspections.length})</h4>
+          <table class="sub-table"><thead><tr><th></th><th>Date</th><th>Status</th><th>Amount</th><th>Description</th><th>Classify</th></tr></thead><tbody>
+          ${d.inspections.map(i => {
+            const dim = i.record_status !== 'active';
+            return `<tr class="${dim?'dimmed':''}">
+              <td>${hcp(i.source_event==='estimate.scheduled'?'estimate':'job', i.hcp_id)}</td>
+              <td>${i.scheduled_at ? new Date(i.scheduled_at).toLocaleDateString() : '-'}</td>
+              <td>${stat(i.status)}${dim?' <span class="tag tag-gray">'+i.record_status+'</span>':''}</td>
+              <td>${fmt$((i.total_amount_cents||0)/100)}</td>
+              <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis" title="${esc(i.description)}">${esc((i.description||'').substring(0,60))}</td>
+              <td>${!dim ? classifyDD('inspection', i.hcp_id) : ''}</td>
+            </tr>`;
+          }).join('')}</tbody></table></div>`;
+      }
+
+      // ── Estimates group ──
+      if (d.estimates.length) {
+        html += `<div class="detail-section"><h4 style="color:#6d28d9">Estimates (${d.estimates.length})</h4>
+          <table class="sub-table"><thead><tr><th></th><th>Date</th><th>Status</th><th>Type</th><th>Amount</th><th>Approved</th><th>Classify</th></tr></thead><tbody>
+          ${d.estimates.map(e => {
+            const dim = e.record_status !== 'active';
+            return `<tr class="${dim?'dimmed':''}">
+              <td>${hcp('estimate', e.hcp_estimate_id)}</td>
+              <td>${e.sent_at ? new Date(e.sent_at).toLocaleDateString() : '-'}</td>
+              <td>${stat(e.status)}${dim?' <span class="tag tag-purple">'+e.record_status+'</span>':''}</td>
+              <td>${e.estimate_type||'-'}</td>
+              <td>${fmt$((e.highest_option_cents||0)/100)}</td>
+              <td>${(e.approved_total_cents||0)>0?'<span class="tag tag-green">'+fmt$((e.approved_total_cents||0)/100)+'</span>':'-'}</td>
+              <td>${!dim ? classifyDD('estimate', e.hcp_estimate_id) : ''}</td>
+            </tr>`;
+          }).join('')}</tbody></table></div>`;
+      }
+
+      // ── Jobs group (includes segments indented) ──
+      if (d.jobs.length || d.segments.length) {
+        html += `<div class="detail-section"><h4 style="color:#166534">Jobs (${d.jobs.length})${d.segments.length?' + '+d.segments.length+' segments':''}</h4>
+          <table class="sub-table"><thead><tr><th></th><th>Date</th><th>Status</th><th>Amount</th><th>Description</th><th>Classify</th></tr></thead><tbody>
+          ${d.jobs.map(j => {
+            const dim = j.record_status !== 'active';
+            const segs = d.segments.filter(s => s.parent_hcp_job_id === j.hcp_job_id);
+            let rows = `<tr class="${dim?'dimmed':''}">
+              <td>${hcp('job', j.hcp_job_id)}</td>
+              <td>${j.scheduled_at ? new Date(j.scheduled_at).toLocaleDateString() : '-'}</td>
+              <td>${stat(j.status)}${dim?' <span class="tag tag-purple">'+j.record_status+'</span>':''}</td>
+              <td>${fmt$((j.total_amount_cents||0)/100)}</td>
+              <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis" title="${esc(j.description)}">${esc((j.description||'').substring(0,60))}</td>
+              <td>${!dim ? classifyDD('job', j.hcp_job_id) : ''}</td>
+            </tr>`;
+            // Show segments nested under their parent job
+            segs.forEach(s => {
+              rows += `<tr style="font-style:italic;background:#f0fdf4">
+                <td style="padding-left:1.5rem">${hcp('job',s.hcp_job_id)} <span class="tag tag-gray">seg #${s.segment_number}</span></td>
+                <td>${s.scheduled_at ? new Date(s.scheduled_at).toLocaleDateString() : '-'}</td>
+                <td>${stat(s.status)}</td>
+                <td>${fmt$((s.total_amount_cents||0)/100)}</td>
+                <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis">${esc((s.description||'').substring(0,60))}</td>
+                <td></td>
+              </tr>`;
+            });
+            return rows;
+          }).join('')}
+          ${d.segments.filter(s => !d.jobs.find(j => j.hcp_job_id === s.parent_hcp_job_id)).map(s => `
+            <tr style="font-style:italic;background:#f0fdf4">
+              <td>${hcp('job',s.hcp_job_id)} <span class="tag tag-gray">seg #${s.segment_number}</span> <span class="tag tag-yellow">orphan</span></td>
+              <td>${s.scheduled_at ? new Date(s.scheduled_at).toLocaleDateString() : '-'}</td>
+              <td>${stat(s.status)}</td>
+              <td>${fmt$((s.total_amount_cents||0)/100)}</td>
+              <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis">${esc((s.description||'').substring(0,60))}</td>
+              <td></td>
+            </tr>
+          `).join('')}
+          </tbody></table></div>`;
+      }
+
+      // Apply all button
+      if (d.inspections.length + d.estimates.length + d.jobs.length > 0) {
+        html += `<div class="actions-row"><button class="btn btn-purple" onclick="applyClassifications('${id}')">Apply All Changes</button></div>`;
+      }
+
+      // Invoices
+      if(d.invoices.length){
+        html+=`<div class="detail-section"><h4>Invoices (${d.invoices.length})</h4>
+          <table class="sub-table"><thead><tr><th>#</th><th>Date</th><th>Status</th><th>Amount</th><th>Paid</th><th>Method</th></tr></thead><tbody>
+          ${d.invoices.map(i=>`<tr>
+            <td>${i.invoice_number||'-'}</td>
+            <td>${i.invoice_date?new Date(i.invoice_date).toLocaleDateString():'-'}</td>
+            <td>${stat(i.status)}</td>
+            <td>${fmt$((i.amount_cents||0)/100)}</td>
+            <td>${i.paid_at?new Date(i.paid_at).toLocaleDateString():'-'}</td>
+            <td>${i.payment_method||'-'}</td>
+          </tr>`).join('')}</tbody></table></div>`;
+      }
+
+      // Review history
+      if(d.reviews.length){
+        html+=`<div class="detail-section"><h4>Audit History</h4>
+          ${d.reviews.map(r=>`<div style="font-size:0.7rem;padding:0.15rem 0;color:#64748b"><strong>${r.action}</strong> by ${r.performed_by} ${r.reason?'— '+r.reason:''} <span style="color:#94a3b8">${new Date(r.performed_at).toLocaleString()}</span></div>`).join('')}
+          </div>`;
+      }
+
+      html+='</div>';
+      td.innerHTML=html;
+      detailTr.appendChild(td);
+      clickedTr.after(detailTr);
+    }
+
+    // ═══════════ Actions ═══════════
+    async function act(action,id){
+      const r=reviewer();if(!r)return;
+      event.stopPropagation();
+      const body={hcp_customer_id:id,performed_by:r};
+      await fetch(`/api/review/${action}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      toast(action.replace(/-/g,' ')+' done');
+      expandedId=null;loadAll();
+    }
+
+    async function override(id,to){
+      const r=reviewer();if(!r)return;
+      event.stopPropagation();
+      const reason=prompt('Reason (optional):');
+      await fetch('/api/review/override-attribution',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({hcp_customer_id:id,performed_by:r,override_to:to,reason})});
+      toast('Attribution overridden');expandedId=null;loadAll();
+    }
+
+    async function reclassify(to,recordId){
+      const r=reviewer();if(!r)return;
+      event.stopPropagation();
+      const endpoint=to==='job'?'reclassify-to-job':'reclassify-to-inspection';
+      const body=to==='job'?{hcp_inspection_id:recordId,performed_by:r}:{hcp_job_id:recordId,performed_by:r};
+      await fetch(`/api/review/${endpoint}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      toast('Reclassified');
+      const eid=expandedId;expandedId=null;
+      await loadAll();
+      // Re-expand
+      setTimeout(()=>{const tr=$(`tr[data-id="${eid}"]`);if(tr){tr.click()}},300);
+    }
+
+    async function exclude(table,recordId){
+      const r=reviewer();if(!r)return;
+      event.stopPropagation();
+      if(!confirm('Exclude from metrics?'))return;
+      await fetch('/api/review/exclude-record',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({table,record_id:recordId,performed_by:r,reason:'Excluded via audit'})});
+      toast('Excluded');
+      const eid=expandedId;expandedId=null;
+      await loadAll();
+      setTimeout(()=>{const tr=$(`tr[data-id="${eid}"]`);if(tr){tr.click()}},300);
+    }
+
+    // Show/hide parent dropdowns when classify dropdown changes
+    document.addEventListener('change', e => {
+      const cl = Array.from(e.target.classList);
+      const isClassify = cl.some(c => c.startsWith('classify_dd_'));
+      if (isClassify) {
+        const custId = cl.find(c => c.startsWith('classify_dd_')).replace('classify_dd_', '');
+        const recordId = e.target.dataset.id;
+        const parentSel = document.querySelector(`.parent_dd_${custId}[data-id="${recordId}"]`);
+        if (parentSel) {
+          const needsParent = e.target.value === 'option' || e.target.value === 'segment';
+          parentSel.style.display = needsParent ? '' : 'none';
+          Array.from(parentSel.options).forEach(o => { o.disabled = o.value === recordId; });
+        }
+      }
+    });
+
+    async function applyClassifications(custId) {
+      const r = reviewer(); if (!r) return;
+      event.stopPropagation();
+      const allDDs = document.querySelectorAll(`.classify_dd_${custId}`);
+      let changes = 0;
+
+      for (const dd of allDDs) {
+        const val = dd.value;
+        const recId = dd.dataset.id;
+        const recType = dd.dataset.type;
+
+        if (val === recType) continue; // no change
+
+        if (val === 'exclude') {
+          const table = recType === 'inspection' ? 'inspections' : recType === 'estimate' ? 'estimates' : 'jobs';
+          await fetch('/api/review/exclude-record', {method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({table, record_id:recId, performed_by:r, reason:'Excluded via audit'})});
+          changes++;
+        } else if (val === 'to_job' && recType === 'inspection') {
+          await fetch('/api/review/reclassify-to-job', {method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({hcp_inspection_id:recId, performed_by:r})});
+          changes++;
+        } else if (val === 'to_inspection' && recType === 'job') {
+          await fetch('/api/review/reclassify-to-inspection', {method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({hcp_job_id:recId, performed_by:r})});
+          changes++;
+        } else if (val === 'option' && recType === 'estimate') {
+          const parentSel = document.querySelector(`.parent_dd_${custId}[data-id="${recId}"]`);
+          const parentId = parentSel?.value;
+          if (parentId && parentId !== recId) {
+            await fetch('/api/review/estimates-as-options', {method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({main_id:parentId, option_ids:[recId], performed_by:r})});
+            changes++;
+          }
+        } else if (val === 'segment' && recType === 'job') {
+          const parentSel = document.querySelector(`.parent_dd_${custId}[data-id="${recId}"]`);
+          const parentId = parentSel?.value;
+          if (parentId && parentId !== recId) {
+            await fetch('/api/review/jobs-as-segments', {method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({main_id:parentId, segment_ids:[recId], performed_by:r})});
+            changes++;
+          }
+        }
+      }
+
+      if (changes > 0) {
+        toast(changes + ' change(s) applied');
+        expandedId = null; await loadAll();
+        setTimeout(() => { const tr = $(`tr[data-id="${custId}"]`); if(tr) tr.click(); }, 300);
+      } else {
+        toast('No changes to apply');
+      }
+    }
+
+    async function applyEstimateActions(custId) {
+      const r = reviewer(); if (!r) return;
+      event.stopPropagation();
+      const actions = document.querySelectorAll(`.est_action_${custId}`);
+      const groups = {}; // parentId -> [childIds]
+      const excludes = [];
+
+      for (const sel of actions) {
+        const id = sel.dataset.id;
+        if (sel.value === 'option') {
+          const parentSel = document.querySelector(`.est_parent_${custId}[data-id="${id}"]`);
+          const parentId = parentSel?.value;
+          if (parentId && parentId !== id) {
+            if (!groups[parentId]) groups[parentId] = [];
+            groups[parentId].push(id);
+          }
+        } else if (sel.value === 'exclude') {
+          excludes.push(id);
+        }
+      }
+
+      // Apply options
+      for (const [parentId, childIds] of Object.entries(groups)) {
+        await fetch('/api/review/estimates-as-options', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({main_id: parentId, option_ids: childIds, performed_by: r})
+        });
+      }
+      // Apply excludes
+      for (const id of excludes) {
+        await fetch('/api/review/exclude-record', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({table:'estimates', record_id:id, performed_by:r, reason:'Excluded via audit'})
+        });
+      }
+
+      const total = Object.values(groups).reduce((a, b) => a + b.length, 0) + excludes.length;
+      if (total > 0) {
+        toast(`${total} estimate(s) updated`);
+        expandedId = null; await loadAll();
+        setTimeout(() => { const tr = $(`tr[data-id="${custId}"]`); if (tr) tr.click(); }, 300);
+      } else {
+        toast('No changes selected');
+      }
+    }
+
+    async function applyJobActions(custId) {
+      const r = reviewer(); if (!r) return;
+      event.stopPropagation();
+      const actions = document.querySelectorAll(`.job_action_${custId}`);
+      const groups = {};
+      const excludes = [];
+
+      for (const sel of actions) {
+        const id = sel.dataset.id;
+        if (sel.value === 'segment') {
+          const parentSel = document.querySelector(`.job_parent_${custId}[data-id="${id}"]`);
+          const parentId = parentSel?.value;
+          if (parentId && parentId !== id) {
+            if (!groups[parentId]) groups[parentId] = [];
+            groups[parentId].push(id);
+          }
+        } else if (sel.value === 'exclude') {
+          excludes.push(id);
+        }
+      }
+
+      for (const [parentId, childIds] of Object.entries(groups)) {
+        await fetch('/api/review/jobs-as-segments', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({main_id: parentId, segment_ids: childIds, performed_by: r})
+        });
+      }
+      for (const id of excludes) {
+        await fetch('/api/review/exclude-record', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({table:'jobs', record_id:id, performed_by:r, reason:'Excluded via audit'})
+        });
+      }
+
+      const total = Object.values(groups).reduce((a, b) => a + b.length, 0) + excludes.length;
+      if (total > 0) {
+        toast(`${total} job(s) updated`);
+        expandedId = null; await loadAll();
+        setTimeout(() => { const tr = $(`tr[data-id="${custId}"]`); if (tr) tr.click(); }, 300);
+      } else {
+        toast('No changes selected');
+      }
+    }
+
+    async function makeOptions(custId){
+      const r=reviewer();if(!r)return;
+      event.stopPropagation();
+      const mainEl=document.querySelector(`input[name="est_m_${custId}"]:checked`);
+      if(!mainEl){alert('Select a main estimate');return}
+      const checked=Array.from(document.querySelectorAll(`.est_o_${custId}:checked`)).map(e=>e.value).filter(v=>v!==mainEl.value);
+      if(!checked.length){alert('Check estimates to make into options');return}
+      await fetch('/api/review/estimates-as-options',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({main_id:mainEl.value,option_ids:checked,performed_by:r})});
+      toast(checked.length+' estimate(s) → options');
+      expandedId=null;await loadAll();
+      setTimeout(()=>{const tr=$(`tr[data-id="${custId}"]`);if(tr){tr.click()}},300);
+    }
+
+    async function makeSegments(custId){
+      const r=reviewer();if(!r)return;
+      event.stopPropagation();
+      const mainEl=document.querySelector(`input[name="job_m_${custId}"]:checked`);
+      if(!mainEl){alert('Select a main job');return}
+      const checked=Array.from(document.querySelectorAll(`.job_s_${custId}:checked`)).map(e=>e.value).filter(v=>v!==mainEl.value);
+      if(!checked.length){alert('Check jobs to make into segments');return}
+      await fetch('/api/review/jobs-as-segments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({main_id:mainEl.value,segment_ids:checked,performed_by:r})});
+      toast(checked.length+' job(s) → segments');
+      expandedId=null;await loadAll();
+      setTimeout(()=>{const tr=$(`tr[data-id="${custId}"]`);if(tr){tr.click()}},300);
+    }
+
+    function changePage(dir){page+=dir;expandedId=null;loadLeads()}
+
+    init();
+  </script>
+</body>
+</html>

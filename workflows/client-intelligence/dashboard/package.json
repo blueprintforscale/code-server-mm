@@ -1,0 +1,16 @@
+{
+  "name": "client-intelligence-dashboard",
+  "version": "1.0.0",
+  "description": "Client Intelligence Dashboard for Blueprint for Scale",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.20.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

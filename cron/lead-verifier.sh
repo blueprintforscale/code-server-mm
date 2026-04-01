@@ -6,6 +6,7 @@
 
 export PATH="/Users/bp/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 unset CLAUDECODE
+source /Users/bp/projects/cron/guard.sh lead-verifier 1200
 
 LOGFILE="/Users/bp/projects/cron/logs/lead-verifier.log"
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
@@ -26,7 +27,7 @@ Step 6: Run \`\$P \$S summary\`
 
 If all steps complete without errors, output ONLY: SUCCESS - no further action needed.
 
-If any step returns an actual error, post a message to the Slack #general channel using the Slack MCP tool with the error details. Start the Slack message with '🔴 Lead Verifier Failed' followed by which step failed and the error output." \
+If any step returns an actual error, post a message to the Slack channel C09AZ1MCLN7 (client_notifications) using the Slack MCP tool with the error details. Start the Slack message with '🔴 Lead Verifier Failed' followed by which step failed and the error output." \
   >> "$LOGFILE" 2>&1
 
 EXIT_CODE=$?

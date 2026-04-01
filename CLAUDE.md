@@ -24,7 +24,7 @@ This is the central monorepo for Blueprint's always-on Mac Mini server (`Bluepri
 
 Configured in `/Users/bp/projects/.mcp.json` (gitignored — contains secrets):
 
-- **Slack** (`slack-mcp-server`): Posts error alerts to Slack #general. Uses xoxp token.
+- **Slack** (`slack-mcp-server`): Posts error alerts to Slack #client_notifications (C09AZ1MCLN7). Uses xoxp token.
 - **Google Ads** (`google-ads-mcp` v0.6.2): Read-only GAQL queries against Google Ads API.
   - Venv: `.mcp-servers/google_ads_mcp/.venv/`
   - Credentials: `.mcp-servers/google_ads_mcp/google-ads.yaml` (OAuth2 + MCC login_customer_id)
@@ -64,7 +64,7 @@ Plist files in `~/Library/LaunchAgents/`:
 | Google Ads full pull | `com.blueprint.google-ads-full-pull.plist` | 3:00 AM PST | Runs data-pipeline ETL (with search terms) |
 | Lead verifier | `com.blueprint.lead-verifier.plist` | :15, :45 | 6-step pipeline: fetch→classify→upload |
 
-**Error reporting**: On failure, `claude -p` posts to Slack #general via Slack MCP. On success, no message (silent success).
+**Error reporting**: On failure, `claude -p` posts to Slack #client_notifications (C09AZ1MCLN7) via Slack MCP. On success, no message (silent success).
 
 **Logs**: `cron/logs/*.log` (script-level) and `cron/logs/*.launchd.log` (launchd stdout/stderr).
 
@@ -82,26 +82,29 @@ Located at `workflows/call-classifier/`. Python 3.12 venv.
 **What it does**:
 1. Fetches **ALL calls** from CallRail (every source, every status) into the `calls` table
 2. Fetches Google Ads **form submissions** into the `form_submissions` table
-3. Classifies only **Google Ads calls/forms** as spam or legitimate (Claude does the classification)
-4. Uploads legitimate leads to Google Ads as **Enhanced Conversions** (via GCLID or hashed phone/email)
+3. Classifies **all calls and forms** as spam or legitimate (Claude does the classification)
+4. Uploads legitimate leads to Google Ads as **Enhanced Conversions** (via GCLID or hashed phone/email) — calls to "Qualified Call [AI]", forms to "Qualified Form [AI]". Only uploads leads from the last **90 days** (Google's click-through conversion window).
 
 **Script**: `classify_calls.py` with subcommands: `fetch`, `fetch-forms`, `pending`, `pending-forms`, `classify-batch`, `classify-forms`, `upload`, `summary`, `log-run`
 
-**Active clients** (must have `callrail_company_id` set in `clients` table):
-- `9699974772` — Aaron Meadows | Golden State Pure Maintenance
-- `6213328850` — David Watts | Pure Maintenance of Oregon
-- `7123434733` — Chad Adams | Pure Air Alabama
-- `5109709947` — Ethan, Tapan, Nate | Pure Maintenance of Central Illinois
+**Active clients**: 31 clients with `callrail_company_id` set in `clients` table. All actively spending Google Ads accounts have two conversion actions: "Qualified Call [AI]" (for calls) and "Qualified Form [AI]" (for forms), both as secondary conversions.
 
-**Adding a new client**: Set `callrail_company_id` in the `clients` table and ensure a "Qualified Lead [AI]" conversion action exists in their Google Ads account.
+**Multi-account CallRail support**: Most clients use the default API key (from `.env`) and account ID (`465371377`). Clients on separate CallRail accounts have per-client credentials stored in `callrail_api_key` and `callrail_account_id` columns:
+- Mold Cure (`1338532896`) — separate CallRail account
+
+**Adding a new client**:
+1. Set `callrail_company_id` in the `clients` table (find via CallRail API `/companies.json`)
+2. If on a different CallRail account, also set `callrail_account_id` and `callrail_api_key`
+3. Create two conversion actions in their Google Ads account (type: `UPLOAD_CLICKS`, category: `QUALIFIED_LEAD`): "Qualified Call [AI]" and "Qualified Form [AI]", both as secondary
+4. The next cron run will automatically start fetching and classifying
 
 **Key database tables**:
 - `calls` — all CallRail calls (all sources). Columns include: `source`, `medium`, `duration`, `transcript`, `first_call`, `callrail_status` (answered/missed/abandoned), `call_type`, `classification`, `uploaded_to_gads`
-- `form_submissions` — Google Ads form leads from CallRail
+- `form_submissions` — all CallRail form submissions (all sources)
 - `call_pipeline_log` — run history for the pipeline
-- `clients` — client config with `callrail_company_id` and `conversion_value`
+- `clients` — client config with `callrail_company_id`, `callrail_account_id` (optional), `callrail_api_key` (optional), and `conversion_value`
 
-**Credentials**: Google Ads yaml at `.mcp-servers/google_ads_mcp/google-ads.yaml`. CallRail API key in `.env`.
+**Credentials**: Google Ads yaml at `.mcp-servers/google_ads_mcp/google-ads.yaml`. Default CallRail API key in `.env`. Per-client CallRail keys in `clients` table.
 
 ## Conventions
 
@@ -123,3 +126,4 @@ Located at `workflows/call-classifier/`. Python 3.12 venv.
 ## Deployment
 
 This is a single-server setup. There is no CI/CD pipeline — Claude Code deploys directly. Apps run as persistent processes managed via `pm2` or similar. The server is always on.
+

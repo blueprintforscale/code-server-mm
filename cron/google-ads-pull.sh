@@ -5,6 +5,7 @@
 
 export PATH="/Users/bp/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 unset CLAUDECODE
+source /Users/bp/projects/cron/guard.sh google-ads-pull 1200
 
 LOGFILE="/Users/bp/projects/cron/logs/google-ads-pull.log"
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
@@ -18,7 +19,7 @@ claude -p --dangerously-skip-permissions \
 
 If the pipeline succeeds with no errors, output ONLY: SUCCESS - no further action needed.
 
-If there are any errors or failures, post a message to the Slack #general channel using the Slack MCP tool summarizing what went wrong, including the error output. Start the Slack message with '🔴 Google Ads Quick Pull Failed' followed by the error details." \
+If there are any errors or failures, post a message to the Slack channel C09AZ1MCLN7 (client_notifications) using the Slack MCP tool summarizing what went wrong, including the error output. Start the Slack message with '🔴 Google Ads Quick Pull Failed' followed by the error details." \
   >> "$LOGFILE" 2>&1
 
 EXIT_CODE=$?

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
 Lead Qualifier Pipeline
-Fetches ALL calls from CallRail (every source) and Google Ads form submissions.
-Classifies only Google Ads calls/forms, and uploads legitimate leads to Google Ads
+Fetches ALL calls and form submissions from CallRail (every source).
+Classifies all leads with AI, and uploads legitimate ones to Google Ads
 as Enhanced Conversions (via GCLID, hashed phone number, or hashed email).
+Calls go to "Qualified Call [AI]", forms go to "Qualified Form [AI]".
 
 Classification is done by Claude Code itself (via system cron), not via API calls.
 This keeps costs at $0 by leveraging the existing Anthropic subscription.
@@ -69,9 +70,9 @@ def get_db():
     return psycopg2.connect(DB_DSN)
 
 
-def get_callrail_headers():
+def get_callrail_headers(api_key=None):
     return {
-        "Authorization": f"Token token={CALLRAIL_API_KEY}",
+        "Authorization": f"Token token={api_key or CALLRAIL_API_KEY}",
         "Content-Type": "application/json",
     }
 
@@ -81,14 +82,16 @@ def get_active_clients(db, client_filter=None):
     cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     if client_filter:
         cur.execute("""
-            SELECT customer_id, name, callrail_company_id, conversion_value
+            SELECT customer_id, name, callrail_company_id, conversion_value,
+                   callrail_account_id, callrail_api_key
             FROM clients
             WHERE callrail_company_id IS NOT NULL AND status = 'active'
               AND customer_id = %s
         """, (int(client_filter),))
     else:
         cur.execute("""
-            SELECT customer_id, name, callrail_company_id, conversion_value
+            SELECT customer_id, name, callrail_company_id, conversion_value,
+                   callrail_account_id, callrail_api_key
             FROM clients
             WHERE callrail_company_id IS NOT NULL AND status = 'active'
         """)
@@ -144,12 +147,14 @@ def format_conversion_time(ts):
 # ===========================================================================
 # CallRail API — Calls
 # ===========================================================================
-def fetch_calls_for_company(company_id, since):
+def fetch_calls_for_company(company_id, since, account_id=None, api_key=None):
     """Fetch all calls from CallRail (all sources, all statuses)."""
+    acct = account_id or CALLRAIL_ACCOUNT_ID
+    headers = get_callrail_headers(api_key)
     calls = []
     page = 1
     while True:
-        url = f"https://api.callrail.com/v3/a/{CALLRAIL_ACCOUNT_ID}/calls.json"
+        url = f"https://api.callrail.com/v3/a/{acct}/calls.json"
         params = {
             "company_id": company_id,
             "start_date": since.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
@@ -157,7 +162,7 @@ def fetch_calls_for_company(company_id, since):
             "per_page": 250,
             "page": page,
         }
-        resp = requests.get(url, headers=get_callrail_headers(), params=params)
+        resp = requests.get(url, headers=headers, params=params)
         resp.raise_for_status()
         data = resp.json()
 
@@ -220,27 +225,26 @@ def store_calls(db, calls, company_id, customer_id):
 # ===========================================================================
 # CallRail API — Forms
 # ===========================================================================
-def fetch_forms_for_company(company_id, since):
-    """Fetch Google Ads form submissions from CallRail."""
+def fetch_forms_for_company(company_id, since, account_id=None, api_key=None):
+    """Fetch all form submissions from CallRail (all sources)."""
+    acct = account_id or CALLRAIL_ACCOUNT_ID
+    headers = get_callrail_headers(api_key)
     forms = []
     page = 1
     while True:
-        url = f"https://api.callrail.com/v3/a/{CALLRAIL_ACCOUNT_ID}/form_submissions.json"
+        url = f"https://api.callrail.com/v3/a/{acct}/form_submissions.json"
         params = {
             "company_id": company_id,
             "start_date": since.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
             "per_page": 250,
             "page": page,
         }
-        resp = requests.get(url, headers=get_callrail_headers(), params=params)
+        resp = requests.get(url, headers=headers, params=params)
         resp.raise_for_status()
         data = resp.json()
 
         for form in data.get("form_submissions", []):
-            source = (form.get("source") or "").lower()
-            medium = (form.get("medium") or "").lower()
-            if "google" in source or medium in ("cpc", "CPC"):
-                forms.append(form)
+            forms.append(form)
 
         if page >= data.get("total_pages", 1):
             break
@@ -326,23 +330,27 @@ def build_click_conversion(gads_client, conversion_action, gclid, phone, email, 
 def upload_conversions_batch(gads_client, customer_id, items, update_cur, db):
     """Upload a batch of conversions for one customer. Returns (uploaded, skipped, errors)."""
     service = gads_client.get_service("GoogleAdsService")
+
+    # Look up both conversion actions: calls → "Qualified Call [AI]", forms → "Qualified Form [AI]"
+    action_map = {}  # name -> resource_name
     query = """
         SELECT conversion_action.resource_name, conversion_action.name
         FROM conversion_action
-        WHERE conversion_action.name = 'Qualified Lead [AI]'
+        WHERE conversion_action.name IN ('Qualified Call [AI]', 'Qualified Form [AI]')
           AND conversion_action.status = 'ENABLED'
     """
-    conversion_action = None
     try:
         results = service.search(customer_id=str(customer_id), query=query)
         for row in results:
-            conversion_action = row.conversion_action.resource_name
-            break
+            action_map[row.conversion_action.name] = row.conversion_action.resource_name
     except Exception as e:
-        log.warning(f"  Could not find conversion action for {customer_id}: {e}")
+        log.warning(f"  Could not find conversion actions for {customer_id}: {e}")
 
-    if not conversion_action:
-        err = f"No 'Qualified Lead [AI]' conversion action for {customer_id}"
+    call_action = action_map.get("Qualified Call [AI]")
+    form_action = action_map.get("Qualified Form [AI]")
+
+    if not call_action and not form_action:
+        err = f"No conversion actions found for {customer_id}"
         log.warning(f"  {err}, skipping {len(items)} items")
         for item in items:
             update_cur.execute(f"""
@@ -357,8 +365,25 @@ def upload_conversions_batch(gads_client, customer_id, items, update_cur, db):
     skipped = 0
 
     for item in items:
+        # Route to correct conversion action based on type
+        if item["_table"] == "form_submissions":
+            action = form_action
+            action_name = "Qualified Form [AI]"
+        else:
+            action = call_action
+            action_name = "Qualified Call [AI]"
+
+        if not action:
+            log.warning(f"  No '{action_name}' action for {customer_id}, skipping {item['_table']} {item['id']}")
+            update_cur.execute(f"""
+                UPDATE {item['_table']} SET upload_error = %s, updated_at = NOW()
+                WHERE id = %s
+            """, (f"No '{action_name}' conversion action", item["id"]))
+            skipped += 1
+            continue
+
         conv = build_click_conversion(
-            gads_client, conversion_action,
+            gads_client, action,
             item.get("gclid"), item.get("phone"), item.get("email"),
             item["ts"], item["value"],
         )
@@ -391,29 +416,42 @@ def upload_conversions_batch(gads_client, customer_id, items, update_cur, db):
 
         response = conversion_upload_service.upload_click_conversions(request=request)
 
+        # Build set of failed indices from partial_failure_error
+        # Uses GoogleAdsFailure to parse the google.rpc.Status details —
+        # this is Google's documented approach for partial failure handling.
+        failed_indices = set()
         if response.partial_failure_error:
             log.warning(f"  Partial failures for {customer_id}: {response.partial_failure_error.message}")
+            from google.ads.googleads.v23.errors.types.errors import GoogleAdsFailure
+            for detail in response.partial_failure_error.details:
+                failure = GoogleAdsFailure.deserialize(detail.value)
+                for error in failure.errors:
+                    if error.location:
+                        for element in error.location.field_path_elements:
+                            if element.field_name == "conversions":
+                                failed_indices.add(element.index)
 
         for i, result in enumerate(response.results):
             item = id_map.get(i)
             if not item:
                 continue
-            if result.gclid or result.user_identifiers:
-                update_cur.execute(f"""
-                    UPDATE {item['_table']} SET
-                        uploaded_to_gads = TRUE,
-                        conversion_value = %s,
-                        updated_at = NOW()
-                    WHERE id = %s
-                """, (float(click_conversions[i].conversion_value), item["id"]))
-                uploaded += 1
-            else:
+            if i in failed_indices:
                 update_cur.execute(f"""
                     UPDATE {item['_table']} SET
                         upload_error = 'Partial failure (see logs)',
                         updated_at = NOW()
                     WHERE id = %s
                 """, (item["id"],))
+            else:
+                update_cur.execute(f"""
+                    UPDATE {item['_table']} SET
+                        uploaded_to_gads = TRUE,
+                        upload_error = NULL,
+                        conversion_value = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                """, (float(click_conversions[i].conversion_value), item["id"]))
+                uploaded += 1
 
         db.commit()
 
@@ -471,7 +509,9 @@ def cmd_fetch(args):
         log.info(f"  [{customer_id}] {client['name']}")
 
         try:
-            calls = fetch_calls_for_company(company_id, since)
+            calls = fetch_calls_for_company(company_id, since,
+                account_id=client.get("callrail_account_id"),
+                api_key=client.get("callrail_api_key"))
             inserted = store_calls(db, calls, company_id, customer_id)
             log.info(f"    Fetched {len(calls)} calls, stored {inserted} new")
             total += inserted
@@ -547,7 +587,9 @@ def cmd_fetch_forms(args):
         log.info(f"  [{customer_id}] {client['name']}")
 
         try:
-            forms = fetch_forms_for_company(company_id, since)
+            forms = fetch_forms_for_company(company_id, since,
+                account_id=client.get("callrail_account_id"),
+                api_key=client.get("callrail_api_key"))
             inserted = store_forms(db, forms, company_id, customer_id)
             log.info(f"    Fetched {len(forms)} Google Ads forms, stored {inserted} new")
             total += inserted
@@ -576,9 +618,8 @@ def cmd_pending(args):
     cur.execute("""
         SELECT id, caller_phone, duration, transcript, classification_attempts
         FROM calls
-        WHERE (classification IS NULL
-           OR (classification = 'error' AND classification_attempts < 3))
-          AND (LOWER(source) LIKE '%%google%%' OR LOWER(medium) = 'cpc')
+        WHERE classification IS NULL
+           OR (classification = 'error' AND classification_attempts < 3)
         ORDER BY start_time ASC
     """)
     pending = cur.fetchall()
@@ -733,6 +774,7 @@ def cmd_upload(args):
         cur.execute("""
             SELECT gclid, caller_phone FROM calls
             WHERE classification = 'legitimate' AND uploaded_to_gads = FALSE
+              AND start_time >= NOW() - INTERVAL '90 days'
               AND (gclid IS NOT NULL OR caller_phone IS NOT NULL)
         """)
         call_rows = cur.fetchall()
@@ -740,6 +782,7 @@ def cmd_upload(args):
         cur.execute("""
             SELECT gclid, customer_phone, customer_email FROM form_submissions
             WHERE classification = 'legitimate' AND uploaded_to_gads = FALSE
+              AND submitted_at >= NOW() - INTERVAL '90 days'
               AND (gclid IS NOT NULL OR customer_phone IS NOT NULL OR customer_email IS NOT NULL)
         """)
         form_rows = cur.fetchall()
@@ -765,7 +808,7 @@ def cmd_upload(args):
     cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     update_cur = db.cursor()
 
-    # Gather uploadable calls
+    # Gather uploadable calls (within 90-day click-through window)
     cur.execute("""
         SELECT c.id, c.gclid, c.caller_phone, c.start_time, c.customer_id,
                cl.conversion_value AS client_conversion_value
@@ -773,12 +816,14 @@ def cmd_upload(args):
         JOIN clients cl ON c.customer_id = cl.customer_id
         WHERE c.classification = 'legitimate'
           AND c.uploaded_to_gads = FALSE
+          AND c.start_time >= NOW() - INTERVAL '90 days'
           AND (c.gclid IS NOT NULL OR c.caller_phone IS NOT NULL)
+          AND cl.callrail_company_id IS NOT NULL
         ORDER BY c.customer_id, c.start_time
     """)
     call_rows = cur.fetchall()
 
-    # Gather uploadable forms
+    # Gather uploadable forms (within 90-day click-through window)
     cur.execute("""
         SELECT f.id, f.gclid, f.customer_phone, f.customer_email, f.submitted_at, f.customer_id,
                cl.conversion_value AS client_conversion_value
@@ -786,7 +831,9 @@ def cmd_upload(args):
         JOIN clients cl ON f.customer_id = cl.customer_id
         WHERE f.classification = 'legitimate'
           AND f.uploaded_to_gads = FALSE
+          AND f.submitted_at >= NOW() - INTERVAL '90 days'
           AND (f.gclid IS NOT NULL OR f.customer_phone IS NOT NULL OR f.customer_email IS NOT NULL)
+          AND cl.callrail_company_id IS NOT NULL
         ORDER BY f.customer_id, f.submitted_at
     """)
     form_rows = cur.fetchall()

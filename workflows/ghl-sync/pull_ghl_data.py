@@ -232,12 +232,15 @@ def upsert_contacts(conn, customer_id, contacts, field_map):
     # Find custom field IDs by name
     lost_reason_field_id = None
     gclid_field_id = None
+    kpi_date_created_field_id = None
     for fid, fname in field_map.items():
         fl = fname.lower()
         if "lost reason" in fl:
             lost_reason_field_id = fid
         elif "google click" in fl or "gclid" in fl or fname == "Google Click ID":
             gclid_field_id = fid
+        elif fl == "kpi: date created" or fl == "kpi date created":
+            kpi_date_created_field_id = fid
 
     for c in contacts:
         ghl_id = c.get("id")
@@ -250,6 +253,7 @@ def upsert_contacts(conn, customer_id, contacts, field_map):
         # Extract custom field values
         lost_reason = None
         gclid = None
+        kpi_date_created = None
         for cf in (c.get("customFields") or []):
             cf_id = cf.get("id")
             cf_val = cf.get("field_value") or cf.get("value")
@@ -257,6 +261,8 @@ def upsert_contacts(conn, customer_id, contacts, field_map):
                 lost_reason = cf_val
             elif cf_id == gclid_field_id:
                 gclid = cf_val if isinstance(cf_val, str) and cf_val else None
+            elif cf_id == kpi_date_created_field_id:
+                kpi_date_created = cf_val if isinstance(cf_val, str) and cf_val else None
 
         # Also check lastAttributionSource.gclid as fallback
         if not gclid:
@@ -269,8 +275,8 @@ def upsert_contacts(conn, customer_id, contacts, field_map):
             INSERT INTO ghl_contacts (
                 ghl_contact_id, customer_id, first_name, last_name,
                 email, phone, phone_normalized, tags, source,
-                date_added, lost_reason, gclid
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                date_added, lost_reason, gclid, kpi_date_created
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (ghl_contact_id) DO UPDATE SET
                 first_name = EXCLUDED.first_name,
                 last_name = EXCLUDED.last_name,
@@ -281,6 +287,7 @@ def upsert_contacts(conn, customer_id, contacts, field_map):
                 source = EXCLUDED.source,
                 lost_reason = EXCLUDED.lost_reason,
                 gclid = COALESCE(EXCLUDED.gclid, ghl_contacts.gclid),
+                kpi_date_created = EXCLUDED.kpi_date_created,
                 updated_at = NOW()
         """, (
             ghl_id, customer_id,
@@ -291,6 +298,7 @@ def upsert_contacts(conn, customer_id, contacts, field_map):
             c.get("dateAdded"),
             lost_reason,
             gclid,
+            kpi_date_created,
         ))
         count += 1
 

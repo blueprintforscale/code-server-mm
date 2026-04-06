@@ -158,7 +158,7 @@ def fetch_calls_for_company(company_id, since, account_id=None, api_key=None):
         params = {
             "company_id": company_id,
             "start_date": since.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-            "fields": "gclid,transcription,milestones,source,medium,customer_phone_number,first_call,call_type,answered",
+            "fields": "gclid,transcription,milestones,source,medium,customer_phone_number,first_call,call_type,answered,tracker_id",
             "per_page": 250,
             "page": page,
         }
@@ -205,15 +205,18 @@ def store_calls(db, calls, company_id, customer_id):
         cur.execute("""
             INSERT INTO calls (callrail_id, callrail_company_id, customer_id,
                              caller_phone, gclid, start_time, duration, transcript,
-                             source, medium, first_call, callrail_status, call_type)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (callrail_id) DO NOTHING
+                             source, medium, first_call, callrail_status, call_type,
+                             tracker_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (callrail_id) DO UPDATE SET tracker_id = EXCLUDED.tracker_id
+                WHERE calls.tracker_id IS NULL
         """, (
             callrail_id, company_id, customer_id,
             call.get("customer_phone_number") or call.get("caller_number"),
             call.get("gclid"), call.get("start_time"), call.get("duration"),
             transcript_text, call.get("source"), call.get("medium"),
             call.get("first_call"), callrail_status, call_type,
+            call.get("tracker_id"),
         ))
         if cur.rowcount > 0:
             inserted += 1

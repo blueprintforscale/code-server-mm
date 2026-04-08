@@ -924,6 +924,33 @@ When a Google Ads lead already existed in the system before their first GA touch
 
 **Decision history:** Discussed and approved by team on 2026-04-08 via Slack. Combo approach chosen over pure history-based or pure time-based options.
 
+### Unmatched Repeat Lead Filtering (Added 2026-04-08)
+
+Applies to: `unmatched_calls` and `unmatched_forms` CTEs in `getHcpFunnel()` and `getJobberFunnel()` in BlueprintOS API.
+
+**Problem:** A lead whose first CallRail interaction was before the dashboard date range still appears as a unique phone in the current period. They're not a new lead — they're a returning caller.
+
+**Rule:** Apply the same 60-day combo logic to unmatched CallRail leads:
+
+| Scenario | Disposition |
+|----------|------------|
+| `first_call = true` and no prior form for this phone | **Count** — genuinely new lead |
+| `first_call = false`, no prior call found in DB | **Count** — prior call predates our data, treat as reactivation |
+| `first_call = false`, last prior call < 60 days ago | **Exclude** — recently active, not a new lead |
+| `first_call = false`, last prior call 60+ days ago, no prior treatment in HCP/Jobber | **Count** — ad reactivated a dormant prospect |
+| `first_call = false`, last prior call 60+ days ago, had prior treatment in HCP/Jobber | **Exclude** — returning customer |
+
+**For unmatched forms:** Same logic, but check whether the phone had any prior call or form submission before the current form's date. Use the earliest prior interaction as the comparison point.
+
+**Definitions:**
+- **Last prior call:** `MAX(start_time) FROM calls WHERE phone = X AND start_time < current_interaction_date`
+- **Prior treatment:** `EXISTS` in `mv_funnel_leads` where `phone_normalized = X AND (has_job_completed OR has_invoice)`. If the phone has no `mv_funnel_leads` record, there's no treatment history.
+- **60 days:** Calendar days between last prior interaction and current interaction
+
+**Implementation:** Filter in the `unmatched_calls` and `unmatched_forms` CTEs. For each `first_call = false` phone, run a subquery checking the 60-day combo rule.
+
+**Source file:** `apps/blueprintos-api/index.js` — `getHcpFunnel()`, `getJobberFunnel()`
+
 ---
 
 ## 23. Manual Override System

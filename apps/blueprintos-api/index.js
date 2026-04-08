@@ -612,6 +612,30 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
         AND NOT EXISTS (SELECT 1 FROM ghl_spam_phones sp WHERE sp.phone = normalize_phone(c2.caller_phone))
         -- Exclude abandoned-as-spam phones (only populated when rate > 20%)
         AND NOT EXISTS (SELECT 1 FROM ghl_abandoned_phones ap WHERE ap.phone = normalize_phone(c2.caller_phone))
+        -- 60-day repeat caller filter: exclude returning callers who aren't reactivated
+        AND (
+          c2.first_call = true
+          OR NOT EXISTS (SELECT 1 FROM calls c_prior
+            WHERE c_prior.customer_id = c2.customer_id
+              AND normalize_phone(c_prior.caller_phone) = normalize_phone(c2.caller_phone)
+              AND c_prior.start_time < c2.start_time)
+          OR (
+            -- Has prior call: apply 60-day combo rule
+            -- Keep if: gap >= 60 days AND no prior treatment
+            EXTRACT(EPOCH FROM (c2.start_time - (
+              SELECT MAX(c_prior2.start_time) FROM calls c_prior2
+              WHERE c_prior2.customer_id = c2.customer_id
+                AND normalize_phone(c_prior2.caller_phone) = normalize_phone(c2.caller_phone)
+                AND c_prior2.start_time < c2.start_time
+            ))) / 86400 >= 60
+            AND NOT EXISTS (
+              SELECT 1 FROM mv_funnel_leads fl2
+              WHERE fl2.customer_id = c2.customer_id
+                AND fl2.phone_normalized = normalize_phone(c2.caller_phone)
+                AND (fl2.has_job_completed OR fl2.has_invoice)
+            )
+          )
+        )
     ),
     unmatched_forms AS (
       SELECT DISTINCT normalize_phone(f2.customer_phone) as phone
@@ -625,6 +649,27 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
         AND NOT EXISTS (SELECT 1 FROM ghl_spam_phones sp WHERE sp.phone = normalize_phone(f2.customer_phone))
         -- Exclude abandoned-as-spam phones (only populated when rate > 20%)
         AND NOT EXISTS (SELECT 1 FROM ghl_abandoned_phones ap WHERE ap.phone = normalize_phone(f2.customer_phone))
+        -- 60-day repeat form filter
+        AND (
+          NOT EXISTS (SELECT 1 FROM calls c_prior
+            WHERE c_prior.customer_id IN (SELECT customer_id FROM client_ids)
+              AND normalize_phone(c_prior.caller_phone) = normalize_phone(f2.customer_phone)
+              AND c_prior.start_time < f2.submitted_at)
+          OR (
+            EXTRACT(EPOCH FROM (f2.submitted_at - (
+              SELECT MAX(c_prior2.start_time) FROM calls c_prior2
+              WHERE c_prior2.customer_id IN (SELECT customer_id FROM client_ids)
+                AND normalize_phone(c_prior2.caller_phone) = normalize_phone(f2.customer_phone)
+                AND c_prior2.start_time < f2.submitted_at
+            ))) / 86400 >= 60
+            AND NOT EXISTS (
+              SELECT 1 FROM mv_funnel_leads fl2
+              WHERE fl2.customer_id IN (SELECT customer_id FROM client_ids)
+                AND fl2.phone_normalized = normalize_phone(f2.customer_phone)
+                AND (fl2.has_job_completed OR fl2.has_invoice)
+            )
+          )
+        )
     ),
     unmatched_count AS (
       SELECT (SELECT COUNT(*) FROM unmatched_calls) + (SELECT COUNT(*) FROM unmatched_forms) as count

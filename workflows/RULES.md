@@ -785,16 +785,18 @@ Removes a specific exception flag from the array. If no flags remain after remov
 
 **Problem:** Coordinated bot campaigns click Google Ads (generating real GCLIDs and costing ad spend), then submit forms with gibberish data. They inflate contact counts and waste ad budget.
 
-**Detection (OR logic — either signal = bot):**
+**Detection (AND logic — both conditions required):**
 
-| Signal | Pattern | Example |
-|--------|---------|---------|
-| Low-vowel gibberish name | `customer_name ~ '^[A-Z]{8,}'` AND vowel ratio < 0.2 | `WCKMKQFSQLZRGIWSSL AYPUDBNGLUNDHHVHUZXLTR` |
-| Gibberish name + dotted gmail | `customer_name ~ '^[A-Z]{8,}'` AND `customer_email ~ '^[a-z](\.[a-z])+.*\d+@gmail\.com$'` | Name: `AIGXLRTROWAAGSGI...` Email: `et.ogod.u.w66.3@gmail.com` |
+| Condition | Pattern | Example |
+|-----------|---------|---------|
+| Two-word all-caps name, both 8+ chars | `customer_name ~ '^[A-Z]{8,}\s+[A-Z]{8,}$'` | `WCKMKQFSQLZRGIWSSL AYPUDBNGLUNDHHVHUZXLTR` |
+| Low vowel ratio (< 0.2) | `vowel_count / consonant_count < 0.2` | Ratio: 0.07 (vs real names > 0.3) |
 
 **Vowel ratio formula:** `LENGTH(REGEXP_REPLACE(UPPER(name), '[^AEIOU]', '', 'g')) / LENGTH(REGEXP_REPLACE(name, '\s', '', 'g'))`
 
-**Why two signals:** The dotted gmail pattern alone catches legitimate emails like `d.c.loring76@gmail.com` (real person: Dimitrius Loring). The gibberish name requirement prevents false positives. Real all-caps names (AMBER TWEEDDALE, NICOLE JOHNSON) have vowel ratios > 0.3 and don't trigger the low-vowel check.
+**Why this approach:** The dotted gmail pattern (`e.tog.oduw.6.6.3@gmail.com`) was considered as a signal but rejected — it false-positives on legitimate emails like `d.c.loring76@gmail.com` (Dimitrius Loring), `m.collingwood414@gmail.com` (Marguerite Collingwood), and `c.gambino.11.11@gmail.com` (Carlotta Gambino). Single-word gibberish names like `KRYSTYNA` or `CHARLY` also cause false positives if the character threshold is too low. The two-word 8+ char requirement with low vowel ratio has zero false positives in testing.
+
+**Known gap:** ~128 single-word gibberish bot forms are not caught by this rule. They are less common and can be addressed later with a tighter single-word pattern if needed.
 
 **Characteristics of these bots:**
 - Often `source = 'Direct'` in CallRail (session tracking doesn't attribute to Google Ads)
@@ -802,7 +804,7 @@ Removes a specific exception flag from the array. If no flags remain after remov
 - Often no phone number, or fake phone numbers
 - Same base email pattern across many clients (slight dot variations)
 
-**Impact (last 90 days):** 364 bot forms across clients detected and excluded.
+**Impact (last 90 days):** 236 bot forms across clients detected and excluded. ~128 single-word bot forms remain uncaught (accepted trade-off to avoid false positives).
 
 **Implementation:** Filter in `unmatched_forms` CTE in `getHcpFunnel()`. Also mark `form_submissions.is_spam = true` during ETL for forms matching these patterns.
 

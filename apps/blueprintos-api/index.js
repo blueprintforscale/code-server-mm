@@ -649,13 +649,11 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
         AND NOT EXISTS (SELECT 1 FROM ghl_spam_phones sp WHERE sp.phone = normalize_phone(f2.customer_phone))
         -- Exclude abandoned-as-spam phones (only populated when rate > 20%)
         AND NOT EXISTS (SELECT 1 FROM ghl_abandoned_phones ap WHERE ap.phone = normalize_phone(f2.customer_phone))
-        -- Exclude bot form spam (gibberish name + low vowel ratio, or gibberish name + dotted gmail)
+        -- Exclude bot form spam: two-word gibberish name (both words 8+ chars) with low vowel ratio
         AND NOT (
-          (f2.customer_name ~ '^[A-Z]{8,}'
-           AND LENGTH(REGEXP_REPLACE(UPPER(f2.customer_name), '[^AEIOU]', '', 'g'))::float
-               / NULLIF(LENGTH(REGEXP_REPLACE(f2.customer_name, '\\s', '', 'g')), 0) < 0.2)
-          OR (f2.customer_name ~ '^[A-Z]{8,}'
-              AND f2.customer_email ~ '^[a-z](\\.[a-z])+.*\\d+@gmail\\.com$')
+          f2.customer_name ~ '^[A-Z]{8,}\\s+[A-Z]{8,}$'
+          AND LENGTH(REGEXP_REPLACE(UPPER(f2.customer_name), '[^AEIOU]', '', 'g'))::float
+              / NULLIF(LENGTH(REGEXP_REPLACE(f2.customer_name, '\\s', '', 'g')), 0) < 0.2
         )
         -- 60-day repeat form filter
         AND (

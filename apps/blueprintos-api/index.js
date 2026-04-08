@@ -805,6 +805,73 @@ async function getJobberFunnel(pool, customerId, params, dateWhere, sourceWhere,
       SELECT
         jc.jobber_customer_id,
         jc.phone_normalized,
+        jc.email,
+        jc.jobber_created_at,
+        -- First GA touch time
+        LEAST(
+          (SELECT MIN(c.start_time) FROM calls c
+           WHERE (c.callrail_id = jc.callrail_id OR (c.customer_id = jc.customer_id AND normalize_phone(c.caller_phone) = jc.phone_normalized))
+             AND (c.source IN ('Google Ads','Google Ads 2') OR c.gclid IS NOT NULL OR c.classified_source = 'google_ads'
+                  OR EXISTS (SELECT 1 FROM callrail_trackers ct WHERE ct.tracker_id = c.tracker_id AND ct.source_type = 'google_ad_extension'))),
+          (SELECT MIN(f.submitted_at) FROM form_submissions f
+           WHERE f.customer_id = jc.customer_id
+             AND (f.callrail_id = jc.callrail_id OR normalize_phone(f.customer_phone) = jc.phone_normalized
+                  OR (jc.email IS NOT NULL AND jc.email <> '' AND lower(f.customer_email) = lower(jc.email)))
+             AND (f.gclid IS NOT NULL OR f.source = 'Google Ads')),
+          (SELECT MIN(COALESCE(gc.kpi_date_created, gc.date_added)) FROM ghl_contacts gc
+           WHERE gc.customer_id = jc.customer_id
+             AND (gc.phone_normalized = jc.phone_normalized
+                  OR (jc.email IS NOT NULL AND jc.email <> '' AND lower(gc.email) = lower(jc.email)))
+             AND gc.gclid IS NOT NULL AND gc.gclid <> '')
+        ) as first_ga_touch_time,
+        -- Reactivation: exclude if recent activity (<60d) or had prior treatment
+        CASE WHEN jc.jobber_created_at < LEAST(
+            COALESCE((SELECT MIN(c.start_time) FROM calls c
+             WHERE (c.callrail_id = jc.callrail_id OR (c.customer_id = jc.customer_id AND normalize_phone(c.caller_phone) = jc.phone_normalized))
+               AND (c.source IN ('Google Ads','Google Ads 2') OR c.gclid IS NOT NULL OR c.classified_source = 'google_ads'
+                    OR EXISTS (SELECT 1 FROM callrail_trackers ct WHERE ct.tracker_id = c.tracker_id AND ct.source_type = 'google_ad_extension'))),
+            '9999-12-31'::timestamptz),
+            COALESCE((SELECT MIN(f.submitted_at) FROM form_submissions f
+             WHERE f.customer_id = jc.customer_id
+               AND (f.callrail_id = jc.callrail_id OR normalize_phone(f.customer_phone) = jc.phone_normalized)
+               AND (f.gclid IS NOT NULL OR f.source = 'Google Ads')),
+            '9999-12-31'::timestamptz),
+            COALESCE((SELECT MIN(COALESCE(gc.kpi_date_created, gc.date_added)) FROM ghl_contacts gc
+             WHERE gc.customer_id = jc.customer_id
+               AND (gc.phone_normalized = jc.phone_normalized OR (jc.email IS NOT NULL AND jc.email <> '' AND lower(gc.email) = lower(jc.email)))
+               AND gc.gclid IS NOT NULL AND gc.gclid <> ''),
+            '9999-12-31'::timestamptz)
+          ) - INTERVAL '7 days'
+          AND (
+            -- Activity gap < 60 days (use jobber_created_at as proxy for last interaction)
+            EXTRACT(EPOCH FROM (LEAST(
+              COALESCE((SELECT MIN(c.start_time) FROM calls c
+               WHERE (c.callrail_id = jc.callrail_id OR (c.customer_id = jc.customer_id AND normalize_phone(c.caller_phone) = jc.phone_normalized))
+                 AND (c.source IN ('Google Ads','Google Ads 2') OR c.gclid IS NOT NULL OR c.classified_source = 'google_ads'
+                      OR EXISTS (SELECT 1 FROM callrail_trackers ct WHERE ct.tracker_id = c.tracker_id AND ct.source_type = 'google_ad_extension'))),
+              '9999-12-31'::timestamptz),
+              COALESCE((SELECT MIN(f.submitted_at) FROM form_submissions f
+               WHERE f.customer_id = jc.customer_id
+                 AND (f.callrail_id = jc.callrail_id OR normalize_phone(f.customer_phone) = jc.phone_normalized)
+                 AND (f.gclid IS NOT NULL OR f.source = 'Google Ads')),
+              '9999-12-31'::timestamptz),
+              COALESCE((SELECT MIN(COALESCE(gc.kpi_date_created, gc.date_added)) FROM ghl_contacts gc
+               WHERE gc.customer_id = jc.customer_id
+                 AND (gc.phone_normalized = jc.phone_normalized OR (jc.email IS NOT NULL AND jc.email <> '' AND lower(gc.email) = lower(jc.email)))
+                 AND gc.gclid IS NOT NULL AND gc.gclid <> ''),
+              '9999-12-31'::timestamptz)
+            ) - GREATEST(
+              jc.jobber_created_at,
+              COALESCE((SELECT MAX(j.start_at) FROM jobber_jobs j WHERE j.jobber_customer_id = jc.jobber_customer_id AND j.customer_id = jc.customer_id), jc.jobber_created_at),
+              COALESCE((SELECT MAX(q.created_at) FROM jobber_quotes q WHERE q.jobber_customer_id = jc.jobber_customer_id AND q.customer_id = jc.customer_id), jc.jobber_created_at)
+            )) / 86400 <= 60
+            -- OR had prior treatment job (non-inspection, completed, >= $1000)
+            OR EXISTS (SELECT 1 FROM jobber_jobs j2 WHERE j2.jobber_customer_id = jc.jobber_customer_id AND j2.customer_id = jc.customer_id
+              AND j2.status IN ('late','requires_invoicing') AND j2.total_cents >= 100000
+              AND NOT (LOWER(j2.title) LIKE '%assessment%' OR LOWER(j2.title) LIKE '%instascope%' OR LOWER(j2.title) LIKE '%inspection%'
+                OR LOWER(j2.title) LIKE '%mold test%' OR LOWER(j2.title) LIKE '%air quality%' OR LOWER(j2.title) LIKE '%air test%'))
+          )
+        THEN true ELSE false END as exclude_from_ga_roas,
         -- Inspection: request with assessment OR inspection-titled job
         GREATEST(
           COALESCE((SELECT COUNT(*) FROM jobber_requests jr WHERE jr.jobber_customer_id = jc.jobber_customer_id
@@ -956,8 +1023,9 @@ async function getJobberFunnel(pool, customerId, params, dateWhere, sourceWhere,
     ),
     funnel_revenue AS (
       SELECT
-        COALESCE(SUM(est_approved_cents), 0) / 100.0 as closed_rev,
+        COALESCE(SUM(CASE WHEN NOT COALESCE(exclude_from_ga_roas, false) THEN est_approved_cents ELSE 0 END), 0) / 100.0 as closed_rev,
         COALESCE(SUM(CASE WHEN has_estimate_sent AND NOT has_estimate_approved
+            AND NOT COALESCE(exclude_from_ga_roas, false)
           THEN est_sent_cents ELSE 0 END), 0) / 100.0 as open_est_rev
       FROM matched_leads
     ),
@@ -968,20 +1036,27 @@ async function getJobberFunnel(pool, customerId, params, dateWhere, sourceWhere,
         AND campaign_type != 'LOCAL_SERVICES'
     ),
     all_time_rev_j AS (
-      SELECT COALESCE(SUM(q.total_cents), 0) / 100.0 as total
+      SELECT COALESCE(SUM(CASE WHEN NOT COALESCE(ml.exclude_from_ga_roas, false) THEN q.total_cents ELSE 0 END), 0) / 100.0 as total
       FROM jobber_quotes q
       JOIN jobber_customers jc ON jc.jobber_customer_id = q.jobber_customer_id AND jc.customer_id = q.customer_id
+      LEFT JOIN matched_leads ml ON ml.jobber_customer_id = jc.jobber_customer_id
       WHERE jc.customer_id IN (SELECT customer_id FROM client_ids)
         AND q.status IN ('approved','converted')
         AND (
           jc.attribution_override = 'google_ads'
           OR jc.callrail_id LIKE 'WF_%'
           OR EXISTS (SELECT 1 FROM calls ca WHERE ca.callrail_id = jc.callrail_id AND is_google_ads_call(ca.source, ca.source_name, ca.gclid))
+          OR EXISTS (SELECT 1 FROM calls ca JOIN callrail_trackers ct ON ct.tracker_id = ca.tracker_id
+            WHERE normalize_phone(ca.caller_phone) = jc.phone_normalized
+            AND ca.customer_id IN (SELECT customer_id FROM client_ids) AND ct.source_type = 'google_ad_extension')
           OR EXISTS (SELECT 1 FROM calls ca WHERE normalize_phone(ca.caller_phone) = jc.phone_normalized
             AND ca.customer_id IN (SELECT customer_id FROM client_ids) AND is_google_ads_call(ca.source, ca.source_name, ca.gclid))
           OR EXISTS (SELECT 1 FROM form_submissions fs WHERE fs.customer_id IN (SELECT customer_id FROM client_ids)
             AND (fs.callrail_id = jc.callrail_id OR fs.phone_normalized = jc.phone_normalized)
             AND fs.gclid IS NOT NULL AND fs.gclid != '')
+          OR EXISTS (SELECT 1 FROM ghl_contacts gc WHERE gc.customer_id = jc.customer_id
+            AND (gc.phone_normalized = jc.phone_normalized OR (jc.email IS NOT NULL AND jc.email != '' AND LOWER(gc.email) = LOWER(jc.email)))
+            AND gc.gclid IS NOT NULL AND gc.gclid != '')
         )
     ),
     program_fee_j AS (

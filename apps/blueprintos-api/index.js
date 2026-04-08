@@ -2190,14 +2190,20 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
         AND NOT EXISTS (SELECT 1 FROM unmatched_forms uf WHERE uf.phone = gc.phone_normalized)
       ORDER BY gc.phone_normalized, gc.date_added DESC
     )
-    SELECT * FROM hcp_leads
-    UNION ALL
-    SELECT * FROM unmatched
-    UNION ALL
-    SELECT * FROM unmatched_forms
-    UNION ALL
-    SELECT * FROM unmatched_ghl
-    ORDER BY contact_date DESC
+    SELECT l.*, COALESCE(fl.first_ga_touch_time IS NOT NULL
+      AND fl.hcp_created_at < fl.first_ga_touch_time - INTERVAL '7 days'
+      AND NOT COALESCE(fl.exclude_from_ga_roas, false), false) as reactivated
+    FROM (
+      SELECT * FROM hcp_leads
+      UNION ALL
+      SELECT * FROM unmatched
+      UNION ALL
+      SELECT * FROM unmatched_forms
+      UNION ALL
+      SELECT * FROM unmatched_ghl
+    ) l
+    LEFT JOIN mv_funnel_leads fl ON fl.hcp_customer_id = l.hcp_customer_id AND fl.customer_id = $1
+    ORDER BY l.contact_date DESC
   `, [customerId, startDate, endDate]);
   return rows;
 });
@@ -2712,7 +2718,13 @@ fastify.get('/clients/:customerId/lead-detail/:hcpCustomerId', async (request) =
         'answered', COALESCE(c.ai_answered, CASE WHEN c.answered THEN 'answered' ELSE 'missed' END),
         'source', c.source,
         'source_name', c.source_name
-      ) FROM calls c WHERE c.callrail_id = hc.callrail_id LIMIT 1) as call_info
+      ) FROM calls c WHERE c.callrail_id = hc.callrail_id LIMIT 1) as call_info,
+      -- Reactivation badge
+      COALESCE((SELECT fl.first_ga_touch_time IS NOT NULL
+        AND fl.hcp_created_at < fl.first_ga_touch_time - INTERVAL '7 days'
+        AND NOT COALESCE(fl.exclude_from_ga_roas, false)
+        FROM mv_funnel_leads fl
+        WHERE fl.hcp_customer_id = hc.hcp_customer_id AND fl.customer_id = hc.customer_id), false) as reactivated
     FROM hcp_customers hc
     JOIN (SELECT phone_normalized, array_agg(hcp_customer_id) as all_ids
           FROM hcp_customers WHERE customer_id = $2

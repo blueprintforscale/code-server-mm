@@ -779,6 +779,33 @@ Removes a specific exception flag from the array. If no flags remain after remov
 
 **Impact:** Sets `is_spam = TRUE`. Spam leads excluded from `v_weekly_leads` and lead counts.
 
+### Bot Form Spam Detection (Added 2026-04-08)
+
+**Applied to:** `form_submissions` — primarily affects unmatched form leads in funnel contact counts.
+
+**Problem:** Coordinated bot campaigns click Google Ads (generating real GCLIDs and costing ad spend), then submit forms with gibberish data. They inflate contact counts and waste ad budget.
+
+**Detection (OR logic — either signal = bot):**
+
+| Signal | Pattern | Example |
+|--------|---------|---------|
+| Low-vowel gibberish name | `customer_name ~ '^[A-Z]{8,}'` AND vowel ratio < 0.2 | `WCKMKQFSQLZRGIWSSL AYPUDBNGLUNDHHVHUZXLTR` |
+| Gibberish name + dotted gmail | `customer_name ~ '^[A-Z]{8,}'` AND `customer_email ~ '^[a-z](\.[a-z])+.*\d+@gmail\.com$'` | Name: `AIGXLRTROWAAGSGI...` Email: `et.ogod.u.w66.3@gmail.com` |
+
+**Vowel ratio formula:** `LENGTH(REGEXP_REPLACE(UPPER(name), '[^AEIOU]', '', 'g')) / LENGTH(REGEXP_REPLACE(name, '\s', '', 'g'))`
+
+**Why two signals:** The dotted gmail pattern alone catches legitimate emails like `d.c.loring76@gmail.com` (real person: Dimitrius Loring). The gibberish name requirement prevents false positives. Real all-caps names (AMBER TWEEDDALE, NICOLE JOHNSON) have vowel ratios > 0.3 and don't trigger the low-vowel check.
+
+**Characteristics of these bots:**
+- Often `source = 'Direct'` in CallRail (session tracking doesn't attribute to Google Ads)
+- Many have `gclid IS NOT NULL` (bot clicked a Google Ad before submitting)
+- Often no phone number, or fake phone numbers
+- Same base email pattern across many clients (slight dot variations)
+
+**Impact (last 90 days):** 364 bot forms across clients detected and excluded.
+
+**Implementation:** Filter in `unmatched_forms` CTE in `getHcpFunnel()`. Also mark `form_submissions.is_spam = true` during ETL for forms matching these patterns.
+
 ### GHL-Based Spam Detection
 **Applied to:** GHL clients on funnel dashboard (spam count KPI + lead exclusion)
 

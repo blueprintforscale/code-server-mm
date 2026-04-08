@@ -71,7 +71,7 @@ Python: re.sub(r'\D', '', phone)[-10:]
 
 ## 2. CallRail Matching
 
-**Applies to:** Both HCP (`hcp_customers`) and Jobber (`jobber_customers`). Same 4-step logic.
+**Applies to:** Both HCP (`hcp_customers`) and Jobber (`jobber_customers`). Same 4-step logic (Steps 1-4). Step 5 applies to HCP and Jobber clients (uses GHL contacts as a bridge). Does not apply to GHL-as-CRM clients (Pamela, Brawley) since the GHL contact already has the correct phone.
 
 **Priority order (first match wins, per customer):**
 
@@ -81,10 +81,25 @@ Python: re.sub(r'\D', '', phone)[-10:]
 | 2 | `form_submissions` | `LOWER(customer_email)` = `LOWER(email)` | Only if Step 1 unmatched |
 | 3 | `form_submissions` | `normalize_phone(customer_phone)` = `phone_normalized` | Only if Steps 1-2 unmatched |
 | 4 | `webflow_submissions` | `phone_normalized` match + `gclid IS NOT NULL` | Only if Steps 1-3 unmatched |
+| 5 | `ghl_contacts` → `calls` | Name match (GHL bridge) | Only if Steps 1-4 unmatched |
 
-**Result:** Sets `callrail_id` and `match_method` ('phone', 'email', 'webflow') on the customer record.
+**Result:** Sets `callrail_id` and `match_method` ('phone', 'email', 'webflow', 'name') on the customer record.
 
 **Webflow special case:** Webflow matches use synthetic ID: `'WF_' || webflow_submissions.id` as the callrail_id.
+
+**Step 5 — Name match via GHL (HCP-only):**
+
+When Steps 1-4 fail to match an HCP customer to CallRail, attempt a name-based match using GHL contacts as a bridge:
+
+1. Find a `ghl_contacts` record where `LOWER(TRIM(first_name))` and `LOWER(TRIM(last_name))` exactly match the HCP customer
+2. The GHL contact must have a different `phone_normalized` than the HCP customer (same phone would have matched in Step 1)
+3. The GHL contact's phone must match a CallRail `calls` record via `normalize_phone(caller_phone)`
+4. The CallRail call must be **within 3 days** of `hcp_created_at` (using `ABS(EXTRACT(EPOCH FROM hcp_created_at - start_time)) <= 3 * 86400`)
+5. The name must be **unique** within that customer account for the 3-day window — if multiple HCP customers or multiple GHL contacts share the same first+last name, skip the match (flag for manual review instead)
+
+**Why this exists:** Clients sometimes enter a lead in HCP with a different phone number than the one they called from (home vs. cell, typos). The GHL contact has the correct phone from CallRail but the HCP record doesn't. This bridges the gap using the name as a cross-reference.
+
+**match_method:** `'name'` — distinguishes these from phone/email/webflow matches for auditing.
 
 **Source files:**
 - HCP: `hcp-sync/pull_hcp_data.py` → `match_callrail()` (~line 705)
@@ -147,6 +162,20 @@ Python: re.sub(r'\D', '', phone)[-10:]
 | Amount < $1,000 (Jobber fallback) | inspection invoice |
 | Amount >= $1,000 (Jobber fallback) | treatment invoice |
 
+**Step 5 — Name match via GHL (HCP-only):**
+
+When Steps 1-4 fail to match an HCP customer to CallRail, attempt a name-based match using GHL contacts as a bridge:
+
+1. Find a `ghl_contacts` record where `LOWER(TRIM(first_name))` and `LOWER(TRIM(last_name))` exactly match the HCP customer
+2. The GHL contact must have a different `phone_normalized` than the HCP customer (same phone would have matched in Step 1)
+3. The GHL contact's phone must match a CallRail `calls` record via `normalize_phone(caller_phone)`
+4. The CallRail call must be **within 3 days** of `hcp_created_at` (using `ABS(EXTRACT(EPOCH FROM hcp_created_at - start_time)) <= 3 * 86400`)
+5. The name must be **unique** within that customer account for the 3-day window — if multiple HCP customers or multiple GHL contacts share the same first+last name, skip the match (flag for manual review instead)
+
+**Why this exists:** Clients sometimes enter a lead in HCP with a different phone number than the one they called from (home vs. cell, typos). The GHL contact has the correct phone from CallRail but the HCP record doesn't. This bridges the gap using the name as a cross-reference.
+
+**match_method:** `'name'` — distinguishes these from phone/email/webflow matches for auditing.
+
 **Source files:**
 - HCP: `hcp-sync/pull_hcp_data.py`
 - Jobber: `risk-dashboard/fix_jobber_inspections.sql`
@@ -176,8 +205,14 @@ If BOTH treatment_invoice_cents = 0 AND approved_estimate_cents = 0:
 - Records with `count_revenue = false` excluded
 - Records with `record_status != 'active'` excluded
 - GBP-only leads excluded (see Section 7)
+- **Post-touch rule (mv_funnel_leads only):** For Google Ads leads, only invoices/estimates created after `first_ga_touch_time` count. See Section 22 "Post-Touch Revenue Rule".
+- **Reactivation exclusion (mv_funnel_leads only):** Leads flagged with `exclude_from_ga_roas = true` should be filtered out of ROAS calculations. See Section 22 "Reactivation Protocol".
 
-**Source file:** `risk-dashboard/fix_lead_revenue.sql` → view `v_lead_revenue`
+**Source files:**
+- `risk-dashboard/fix_lead_revenue.sql` → view `v_lead_revenue` (older, does not include post-touch or reactivation rules)
+- `mv_funnel_leads` materialized view (canonical, includes all rules)
+
+**Note:** `v_lead_revenue` and `get_dashboard_metrics()` do not yet implement post-touch or reactivation rules. They will show slightly higher ROAS than BlueprintOS. Unification planned — see Section 22.
 
 ---
 
@@ -323,6 +358,49 @@ actual_quality_leads = COUNT(DISTINCT phone) WHERE phone NOT IN (ghl_spam_phones
 
 **Source file:** `blueprintos-api/index.js` — all `spamExclude` variables and inline spam patterns
 
+### BlueprintOS Dashboard: Contacts vs Quality Leads (Added 2026-04-01)
+
+The BlueprintOS funnel and lead trend chart now correctly separate contacts from quality leads:
+
+- **Contacts card**: Total GA contacts (calls + forms) before ANY exclusions — includes spam, abandoned, everything
+- **Quality leads card / funnel top**: Contacts minus spam minus excluded abandoned
+- **Lead trend chart**: Shows quality leads per month (spam + excluded_abandoned subtracted). Uses a **trailing 3-month window** to compute the abandoned rate for each month (current month + up to 2 prior months). This smooths the threshold so it does not flip on/off between adjacent months, preventing artificial spikes or cliffs in the trendline.
+
+**`extra_spam_keywords` support:** The funnel endpoint now respects `clients.extra_spam_keywords`. For clients with `{abandoned}`, all abandoned leads are excluded from quality regardless of the 20% threshold (e.g., Liz & Scott).
+
+**`excluded_abandoned` field:** The monthly trend API returns this per-month field. It equals `abandoned` when:
+1. Client has `extra_spam_keywords` containing 'abandoned', OR
+2. The month's abandoned rate exceeds 20%
+
+Otherwise `excluded_abandoned = 0` (abandoned counted as quality).
+
+**Applies to:** All client types (HCP, Jobber, GHL). HCP funnel includes `unmatched_excluded` CTE to correctly count unmatched CallRail leads filtered by spam/abandoned phone lists in the contacts total.
+
+**Source files:**
+- `blueprintos-api/index.js` — `getHcpFunnel()`, `getJobberFunnel()`, `getGhlFunnel()`, monthly-trend endpoint
+- `MonthlyTrendChart.tsx` — quality = leads - spam - excluded_abandoned
+- `HistoricalPerformance.tsx` — same logic for Leads metric
+
+### mv_funnel_leads Materialized View (Updated 2026-04-01)
+
+The `mv_funnel_leads` materialized view now has split spam columns:
+- **`ghl_spam`**: Core spam only (spam, not a lead, wrong number, out of area, wrong service) + GHL opportunity stage matching. Does NOT include abandoned.
+- **`ghl_abandoned`**: Abandoned via lost_reason or opportunity status. Only excluded when period abandoned rate > 20%.
+
+The `getHcpFunnel()` function in the BlueprintOS API implements:
+1. **Core spam exclusion** with CRM activity rescue (leads with HCP inspections/estimates/invoices/jobs are never excluded)
+2. **20% abandoned rule** via `abandoned_rate` CTE (period-scoped)
+3. **Unmatched lead spam filtering** via `ghl_spam_phones` + `ghl_abandoned_phones` CTEs
+
+### Guarantee Calculation (Updated 2026-04-01)
+
+Revenue and ad spend for the guarantee metric are **capped at the first 12 months** from the client's `start_date`. This ensures the guarantee measures performance within the guarantee period, not all-time.
+
+- **`guarantee_period` CTE**: Computes `start_date + 12 months` as `end_date`
+- Revenue: Only HCP leads created before `end_date`
+- Ad spend: Only daily metrics before `end_date`
+- `months_in_program` returned in funnel response for frontend display
+
 ### Spam Rate (shown as "Spam %" on risk dashboard)
 - **Definition:** `spam_contacts / quality_leads` (actual spam contacts divided by total contacts in the period)
 - **Includes** abandoned-as-spam contacts when the >20% threshold is active
@@ -412,6 +490,9 @@ When the VA sees multiple records at the same address, they can:
 | 3 | $0 estimates (`estimate_type = 'unknown'`) | `false` |
 | 4 | Canceled segments | `false` |
 | 5 | Segments within 10% of parent job amount (`segment >= parent * 0.9`) | `false` |
+| 6 | Restored: approved treatment estimates >= $1,000 that were previously $0/unknown placeholders | `true` |
+
+**Rule 6 detail:** When an estimate starts as a $0 placeholder (triggering rule 3), but the client later fills in the amount and the customer approves it, the ETL restores `count_revenue = true`. This prevents approved treatment estimates from being permanently hidden after starting as placeholders. Added 2026-04-01.
 
 **Revenue exceeds estimate flag:** If total segment revenue > 120% of approved estimate, flag `revenue_exceeds_estimate` is added.
 
@@ -449,6 +530,35 @@ When the VA sees multiple records at the same address, they can:
 **Key:** Segments (`is_segment = true`) are excluded from job counts but included in revenue. Options count as 1 estimate (approved option wins).
 
 **Source file:** `hcp-sync/dashboard_views.sql` → view `v_hcp_funnel`
+
+---
+
+## 14.5. Phone Dedup in Funnel Counts
+
+**Applies to:** HCP clients in BlueprintOS funnel dashboard (`getHcpFunnel` in `blueprintos-api/index.js`).
+
+**Problem:** HCP sometimes has multiple customer records for the same phone number (e.g., auto-created from caller ID + manually entered by client). The `phone_groups` CTE in `mv_funnel_leads` merges invoices/estimates/jobs across all records for a phone via `all_ids`, but outputs one row per HCP customer. This causes double-counting in funnel stages and revenue.
+
+**Rule:** The funnel dashboard deduplicates `mv_funnel_leads` by `phone_normalized` before counting. One phone = one lead.
+
+**Record selection priority (DISTINCT ON phone_normalized ORDER BY):**
+1. Named records preferred over anonymous/caller-ID (`first_name NOT SIMILAR TO '%(Wireless|Caller)%'`)
+2. Records with email preferred over records without
+3. Earliest `hcp_created_at` wins ties
+
+**Revenue is not lost:** Because `phone_groups.all_ids` already includes all HCP customer IDs for a phone, the surviving row's invoice/estimate/job lookups see all records. Even if invoices were split across two HCP records, the deduped row captures both.
+
+**Where applied:**
+- `matched` → `matched_deduped` CTE (period funnel counts + revenue)
+- `spam_excluded` CTE (total contacts count)
+- `all_time_rev` CTE (guarantee ROAS calculation)
+
+**Where NOT applied:**
+- `mv_funnel_leads` view itself (keeps all records for auditing)
+- Drill-down drawers (may show individual records)
+- Risk dashboard (uses its own queries)
+
+**Source:** `blueprintos-api/index.js` → `getHcpFunnel()` (~line 410)
 
 ---
 
@@ -554,6 +664,20 @@ Presentation risk only fires when ALL THREE stories fail at months 5+.
 **Pre-lead rule detail:** If the customer record in HCP or Jobber was created more than 7 days before their first CallRail call, they're flagged as a pre-existing customer. This means they were in the field management system before any ad-driven contact — their revenue may not be attributable to Google Ads. Shown as an amber "Pre-lead" pill on dashboard drilldowns and VA review cards.
 
 **Applies to:** Both HCP (`hcp_customers.hcp_created_at`) and Jobber (`jobber_customers.jobber_created_at`)
+
+**Step 5 — Name match via GHL (HCP-only):**
+
+When Steps 1-4 fail to match an HCP customer to CallRail, attempt a name-based match using GHL contacts as a bridge:
+
+1. Find a `ghl_contacts` record where `LOWER(TRIM(first_name))` and `LOWER(TRIM(last_name))` exactly match the HCP customer
+2. The GHL contact must have a different `phone_normalized` than the HCP customer (same phone would have matched in Step 1)
+3. The GHL contact's phone must match a CallRail `calls` record via `normalize_phone(caller_phone)`
+4. The CallRail call must be **within 3 days** of `hcp_created_at` (using `ABS(EXTRACT(EPOCH FROM hcp_created_at - start_time)) <= 3 * 86400`)
+5. The name must be **unique** within that customer account for the 3-day window — if multiple HCP customers or multiple GHL contacts share the same first+last name, skip the match (flag for manual review instead)
+
+**Why this exists:** Clients sometimes enter a lead in HCP with a different phone number than the one they called from (home vs. cell, typos). The GHL contact has the correct phone from CallRail but the HCP record doesn't. This bridges the gap using the name as a cross-reference.
+
+**match_method:** `'name'` — distinguishes these from phone/email/webflow matches for auditing.
 
 **Source files:**
 - HCP: `hcp-sync/pull_hcp_data.py` → `detect_exceptions()` (~line 933)
@@ -682,16 +806,22 @@ Removes a specific exception flag from the array. If no flags remain after remov
 
 ### Source Classification Priority
 
-| Check | Source |
-|-------|--------|
-| Manual `attribution_override` set | Whatever override says |
-| Call `source_name = 'LSA'` | `lsa` |
-| Call `source_name` matches GMB/GBP/Main Business Line | Check multi-touch (see GBP rules below) |
-| Call passes `is_google_ads_call(source, source_name, gclid)` | `google_ads` |
-| Form has GCLID or `source = 'Google Ads'` (matched by callrail_id, phone, or email) | `google_ads` |
-| Webflow match (`callrail_id LIKE 'WF_%'`) | `google_ads` |
-| GHL contact has GCLID in custom fields (ghl_contacts.gclid IS NOT NULL) | google_ads |
-| None of the above | `unknown` |
+**In mv_funnel_leads (canonical, used by BlueprintOS):**
+
+| Priority | Check | Source |
+|----------|-------|--------|
+| 1 | Manual `attribution_override = 'google_ads'` | `google_ads` |
+| 2 | Webflow match (`callrail_id LIKE 'WF_%'`) | `google_ads` |
+| 3 | Call through Google Ads Call Extension tracker (`callrail_trackers.source_type = 'google_ad_extension'`, matched by callrail_id) | `google_ads` |
+| 4 | Call through Google Ads Call Extension tracker (matched by phone) | `google_ads` |
+| 5 | Call has GCLID or `classified_source = 'google_ads'` (excluding LSA) | `google_ads` |
+| 6 | Form has GCLID or `source = 'Google Ads'` (matched by callrail_id, phone, or email) | `google_ads` |
+| 7 | GHL contact has GCLID (matched by phone or email) | `google_ads` |
+| 8 | `attribution_override = 'lsa'` or call `source_name = 'LSA'` | `lsa` |
+| 9 | `attribution_override = 'gbp'` or call `source = 'Google My Business'` | `gbp` |
+| 10 | None of the above | `other` |
+
+**In v_lead_revenue / get_dashboard_metrics (risk dashboard) — older logic, does not yet include steps 3-4 (tracker attribution). Unification planned.**
 
 ### Multi-Touch Form Matching (Critical)
 
@@ -723,14 +853,78 @@ When a call comes from GBP/GMB, check if the same person has a prior Google Ads 
 ---
 
 
-### GHL GCLID Fallback (Added 2026-03-30)
+### GHL GCLID Fallback (Added 2026-03-30, implemented 2026-04-03)
 
 For GHL clients, leads may click a Google Ad but contact the business directly (bypassing CallRail tracking). GHL captures the GCLID in contact custom fields ("Google Click ID"). When a GHL contact has a non-null GCLID, attribute to google_ads even if no CallRail call or form exists for that phone number.
 
-- **ETL:** ghl-sync/pull_ghl_data.py extracts GCLID from custom fields (field name containing "google click" or "gclid") and stores in ghl_contacts.gclid
-- **Funnel:** Source join includes ghl_contacts with gclid IS NOT NULL as a third UNION alongside CallRail calls and forms
+- **Match:** By phone_normalized OR email (same logic as form_submissions matching)
+- **Signal:** Only `ghl_contacts.gclid IS NOT NULL` — never use `ghl_contacts.source` field (unreliable, can be set manually)
+- **ETL:** ghl-sync/pull_ghl_data.py extracts GCLID from custom fields (field name containing "google click" or "gclid") and stores in ghl_contacts.gclid. Also checks `lastAttributionSource.gclid` as fallback.
+- **Views:** Added to v_lead_revenue (fix_lead_revenue.sql) and mv_funnel_leads as step 7 in the attribution cascade, after Webflow and before ELSE 'unknown'
 - **Scope:** Applies to Google Ads source filter only. Does not affect GBP, LSA, or other source detection.
-- **Priority:** Lower than CallRail attribution (fallback only)
+- **Priority:** Lowest — only fires when CallRail (calls, forms, webflow) has no GA match
+
+### Call Extension Tracker Attribution (Added 2026-04-06)
+
+CallRail assigns each tracking number a `tracker_id`. Some calls through Google Ads Call Extension trackers lose their "Google Ads" source tag in CallRail (tagged as "Direct" instead). We now detect these by matching the call's `tracker_id` against the `callrail_trackers` lookup table.
+
+- **Rule:** If a call came through a tracker where `source_type = 'google_ad_extension'`, attribute to `google_ads` regardless of CallRail's `source` field
+- **Table:** `callrail_trackers` — populated from CallRail API (`GET /v3/a/{account_id}/trackers.json`). Contains tracker_id, name, source_type, company_id, tracking_number, status.
+- **ETL:** `classify_calls.py` now pulls `tracker_id` on every call and stores it in `calls.tracker_id`. Backfill script: `backfill_tracker_id.py`.
+- **Priority:** In mv_funnel_leads, this fires after `attribution_override` and `WF_` checks, but before GCLID/source checks. Two checks: first by callrail_id match, then by phone match (catches calls not linked by callrail_id).
+- **Tracker names vary:** "Google Ads Call Extension", "Google Ad Extension", "Google Ads Extension Number", etc. The `source_type = 'google_ad_extension'` field is canonical.
+- **Impact:** 86 leads, $121K moved from "other" to google_ads across 7 clients.
+- **Scope:** Currently only implemented in `mv_funnel_leads`. Not yet in `v_lead_revenue` or `get_dashboard_metrics()`. Unification planned.
+
+### Post-Touch Revenue Rule (Added 2026-04-06)
+
+For Google Ads leads, only count revenue (invoices, estimates) and funnel activity (inspections, jobs) that occurred **after** the first Google Ads touch. Pre-touch revenue is not attributable to the ad.
+
+- **Column:** `mv_funnel_leads.first_ga_touch_time` — the earliest Google Ads attribution event
+- **Computed as:** `LEAST(earliest GA call, earliest GA form, earliest GHL GCLID contact date)`
+  - GA call: CallRail call with `source IN ('Google Ads','Google Ads 2')` OR `gclid IS NOT NULL` OR `classified_source = 'google_ads'` OR tracker is `google_ad_extension`
+  - GA form: CallRail form with `gclid IS NOT NULL` OR `source = 'Google Ads'`
+  - GHL GCLID: `COALESCE(ghl_contacts.kpi_date_created, ghl_contacts.date_added)` where `gclid IS NOT NULL`. The `kpi_date_created` custom field overrides `date_added` for Webflow CSV imports where the default create date is the import date, not the form submission date.
+- **Filter:** All revenue columns (est_sent_cents, est_approved_cents, job_cents, invoice_cents, insp_invoice_cents, treat_invoice_cents) and all funnel flags (has_inspection_scheduled, etc.) only count records dated on or after `first_ga_touch_time`
+- **Non-GA leads unaffected:** The post-touch filter only applies when `lead_source = 'google_ads'`. Other sources get all-time revenue as before.
+- **Impact:** ~$88K removed across portfolio (last 90 days), ~7% correction.
+- **Scope:** Currently only in `mv_funnel_leads`. Not yet in `v_lead_revenue` or `get_dashboard_metrics()`. Unification planned.
+
+### Reactivation Protocol — 60-Day Combo Rule (Added 2026-04-08)
+
+When a Google Ads lead already existed in the system before their first GA touch, determine whether to count them as a legitimate GA-attributed lead or exclude them.
+
+**Rule (the "60-day combo"):**
+
+| Scenario | Disposition |
+|----------|------------|
+| New lead (HCP created within 7 days of GA touch) | **Count** — normal new lead |
+| Prior history, last interaction < 60 days before GA touch | **Exclude** — recently active, would have found business anyway |
+| Prior history, last interaction 60+ days, NO prior treatment | **Count** — ad reactivated a dormant unconverted prospect |
+| Prior history, last interaction 60+ days, HAD prior treatment | **Exclude** — established customer, ad didn't drive the conversion |
+
+**Definitions:**
+- **Last interaction:** `GREATEST(hcp_created_at, last job date, last inspection date, last estimate sent date, last CallRail call, last CallRail form)` — all dated before the first GA touch
+- **Prior treatment:** Completed treatment job (`status IN ('complete rated','complete unrated')` AND `total_amount_cents >= 100000`) OR treatment invoice (`invoice_type = 'treatment'` AND `amount_cents > 0`) dated before the first GA touch
+- **60 days:** Calendar days between last_prior_interaction and first_ga_touch_time
+
+**Columns:**
+- `mv_funnel_leads.last_prior_interaction` — timestamp of most recent pre-GA-touch activity
+- `mv_funnel_leads.has_prior_treatment` — boolean, true if completed treatment work exists before GA touch
+- `mv_funnel_leads.exclude_from_ga_roas` — boolean, true if the lead should be excluded from GA ROAS calculations
+
+**How dashboards should use it:**
+- When calculating Google Ads ROAS, filter: `WHERE lead_source = 'google_ads' AND NOT exclude_from_ga_roas`
+- The lead still appears in the funnel and lead lists — it's not deleted, just excluded from ROAS
+- The post-touch revenue columns still reflect only post-touch amounts regardless of exclusion
+
+**Impact (last 90 days):** 3 leads excluded, $18,792 removed.
+
+**Scope:** Currently only in `mv_funnel_leads`. Not yet in `v_lead_revenue` or `get_dashboard_metrics()`. Unification planned.
+
+**Decision history:** Discussed and approved by team on 2026-04-08 via Slack. Combo approach chosen over pure history-based or pure time-based options.
+
+---
 
 ## 23. Manual Override System
 
@@ -1214,13 +1408,21 @@ The **CallRail Intelligence Service** (`callrail-intelligence/`) runs on the Mac
 
 1. `call_type = 'abandoned'` → **abandoned** (95% confidence)
 2. Duration < 5s → **abandoned** (90%)
-3. No transcript + duration < 10s → **abandoned** (70%)
-4. Voicemail keywords + 1 speaker → **missed** (95%)
-5. Greeting keywords + 1 speaker → **abandoned** (90% — caller hung up during greeting)
-6. Greeting keywords + 2+ speakers + 20s+ → **answered** (90% — real conversation)
-7. 2+ speakers + 15s+ → **answered** (85%)
-8. 1 speaker + < 15s → **abandoned** (80%)
-9. Fallback: CallRail's `answered` boolean (30% confidence)
+3. **CallRail says not answered** (`answered=false` or `callrail_status=missed/abandoned`) → trust it (90%). CallRail is 99.85% accurate when it says a call was NOT answered. Only override if transcript shows 60s+ two-way conversation.
+4. No transcript + duration < 10s → **abandoned** (70%)
+5. No transcript + duration 20–44s → **missed** (50% — likely voicemail; old threshold was 20s, raised to 45s)
+6. No transcript + duration 45s+ → **answered** (50%)
+7. **Long call override**: 60s+ with both `Agent:` and `Caller:` in transcript → **answered** (95%)
+8. Voicemail keywords + 1 speaker → **missed** (95%)
+9. Voicemail keywords + <60s (even with 2 speakers) → **missed** (85% — caller left a message after beep)
+10. Greeting keywords + 1 speaker + <10s → **abandoned** (90%)
+11. Greeting keywords + 1 speaker + 10s+ → **missed** (85% — IVR only, no conversation)
+12. Greeting keywords + 2+ speakers + 20s+ → **answered** (90%)
+13. 2+ speakers + 15s+ → **answered** (85%)
+14. 1 speaker + < 15s → **abandoned** (80%)
+15. Fallback: CallRail's `answered` boolean (30% confidence)
+
+**Speaker detection**: Counts `Agent:` and `Caller:` labels in transcript text (more reliable than `speaker_percent` which is often missing).
 
 **Voicemail keywords:** "leave a message", "at the tone", "you've reached", "mailbox is full", etc.
 **Greeting keywords:** "thank you for calling", "press 1", "call may be recorded", etc.

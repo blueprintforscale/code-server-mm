@@ -116,6 +116,18 @@ Located at `workflows/call-classifier/`. Python 3.12 venv.
 - **Dependencies**: Use `package.json` at the root for Node.js deps. Use `requirements.txt` per workflow for Python deps.
 - **Python venvs**: Use Python 3.12 (`/opt/homebrew/bin/python3.12`). Each workflow has its own `.venv/`.
 
+
+## Critical: Do Not Modify These Sections
+
+**BlueprintOS API (`apps/blueprintos-api/index.js`):**
+
+- **Do NOT re-enable `get_dashboard_metrics()` override** in the funnel endpoint (line ~210). It is intentionally disabled (`if (false && ...)`). The funnel endpoint (`getHcpFunnel`) is now the single source of truth for lead counts. `get_dashboard_metrics()` does not handle bot detection, repeat caller filtering, attribution overrides, or the reactivation protocol. Re-enabling it causes funnel/drawer count mismatches.
+
+- **Do NOT remove the lead-spreadsheet post-filter** (the `quality_phones` section near the end of the `/lead-spreadsheet` handler). This ensures the drawer count matches the funnel count exactly. It uses `getHcpFunnel`'s `quality_phones` array as the authoritative phone list, with a fallback query for missing phones.
+
+- **Do NOT remove the `quality_phones` subquery** from `getHcpFunnel`'s final SELECT. The lead-spreadsheet post-filter depends on it.
+
+These were added on 2026-04-08 after extensive data accuracy work. See `workflows/RULES.md` (Sections 15, 21, 22) and the guard comments in the code for full context.
 ## Database Guidelines
 
 - The `blueprint` database holds client data and internal app data.

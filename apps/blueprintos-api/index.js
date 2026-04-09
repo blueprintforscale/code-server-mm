@@ -653,7 +653,7 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
         AND NOT (
           f2.customer_name ~ '^[A-Z]{8,}\\s+[A-Z]{8,}$'
           AND LENGTH(REGEXP_REPLACE(UPPER(f2.customer_name), '[^AEIOU]', '', 'g'))::float
-              / NULLIF(LENGTH(REGEXP_REPLACE(f2.customer_name, '\\s', '', 'g')), 0) < 0.2
+              / NULLIF(LENGTH(REGEXP_REPLACE(f2.customer_name, '\\s', '', 'g')), 0) < 0.25
         )
         -- 60-day repeat form filter
         AND (

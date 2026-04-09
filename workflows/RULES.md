@@ -790,7 +790,7 @@ Removes a specific exception flag from the array. If no flags remain after remov
 | Condition | Pattern | Example |
 |-----------|---------|---------|
 | Two-word all-caps name, both 8+ chars | `customer_name ~ '^[A-Z]{8,}\s+[A-Z]{8,}$'` | `WCKMKQFSQLZRGIWSSL AYPUDBNGLUNDHHVHUZXLTR` |
-| Low vowel ratio (< 0.2) | `vowel_count / consonant_count < 0.2` | Ratio: 0.07 (vs real names > 0.3) |
+| Low vowel ratio (< 0.25) | `vowel_count / total_chars < 0.25` | Bot: 0.07, Real names: 0.25+ (MCKINNON CHAPPELL = 0.25, safe) |
 
 **Vowel ratio formula:** `LENGTH(REGEXP_REPLACE(UPPER(name), '[^AEIOU]', '', 'g')) / LENGTH(REGEXP_REPLACE(name, '\s', '', 'g'))`
 
@@ -804,7 +804,7 @@ Removes a specific exception flag from the array. If no flags remain after remov
 - Often no phone number, or fake phone numbers
 - Same base email pattern across many clients (slight dot variations)
 
-**Impact (last 90 days):** 236 bot forms across clients detected and excluded. ~128 single-word bot forms remain uncaught (accepted trade-off to avoid false positives).
+**Impact (last 90 days):** 352 bot forms across clients detected and excluded. ~128 single-word bot forms remain uncaught (accepted trade-off to avoid false positives).
 
 **Implementation:** Filter in `unmatched_forms` CTE in `getHcpFunnel()`. Also mark `form_submissions.is_spam = true` during ETL for forms matching these patterns.
 

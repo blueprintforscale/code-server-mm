@@ -785,6 +785,11 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
       (SELECT total FROM all_time_rev) as all_time_rev,
       (SELECT total FROM program_fee) as program_price,
       (SELECT months_in FROM guarantee_period) as months_in_program
+      ,(SELECT array_agg(phone) FROM (
+        SELECT DISTINCT phone_normalized as phone FROM matched
+        UNION SELECT phone FROM unmatched_calls
+        UNION SELECT phone FROM unmatched_forms
+      ) qp) as quality_phones
     FROM matched_agg ma
   `, params);
 
@@ -1988,6 +1993,12 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
     unmatchedSourceWhere = `AND is_google_ads_call(c.source, c.source_name, c.gclid)`;
   }
 
+  // Map source to mv_funnel_leads.lead_source (same as getHcpFunnel)
+  let mvSourceWhere = '';
+  if (source === 'gbp') mvSourceWhere = "AND fl.lead_source = 'gbp'";
+  else if (source === 'lsa') mvSourceWhere = "AND fl.lead_source = 'lsa'";
+  else if (source === 'google_ads') mvSourceWhere = "AND fl.lead_source = 'google_ads'";
+
   // Default: HCP lead spreadsheet
   const { rows } = await pool.query(`
     WITH client_ids AS (
@@ -2259,7 +2270,63 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
     LEFT JOIN mv_funnel_leads fl ON fl.hcp_customer_id = l.hcp_customer_id AND fl.customer_id = $1
     ORDER BY l.contact_date DESC
   `, [customerId, startDate, endDate]);
-  return rows;
+  // Post-filter: use getHcpFunnel's quality_phones as single source of truth
+  const sourceWhere = source === 'google_ads' ? 'AND is_google_ads_call(c2.source, c2.source_name, c2.gclid)'
+    : source === 'gbp' ? "AND c2.source = 'Google My Business' AND NOT is_google_ads_call(c2.source, c2.source_name, c2.gclid)"
+    : source === 'lsa' ? "AND c2.source_name = 'LSA'" : '';
+  const funnelDateWhere = `AND lead_date BETWEEN '${startDate}'::date AND '${endDate}'::date`;
+  const funnelCidCTE = `WITH client_ids AS (SELECT customer_id FROM clients WHERE customer_id = ${customerId} OR parent_customer_id = ${customerId})`;
+  const extraSpam = clientResult.rows[0]?.extra_spam_keywords || null;
+  const funnelResult = await getHcpFunnel(pool, customerId, [customerId], funnelDateWhere, sourceWhere, funnelCidCTE, extraSpam);
+  
+  const qualityPhones = funnelResult.quality_phones || [];
+  const qualityPhoneSet = new Set(qualityPhones);
+  let filtered = rows.filter(r => r.phone && qualityPhoneSet.has(r.phone));
+  
+  // Fill missing phones from funnel that drawer SQL missed
+  const drawerPhones = new Set(filtered.map(r => r.phone));
+  const missingPhones = qualityPhones.filter(p => !drawerPhones.has(p));
+  if (missingPhones.length > 0) {
+    const { rows: missingRows } = await pool.query(`
+      SELECT fl.hcp_customer_id,
+        COALESCE(NULLIF(TRIM(COALESCE(fl.first_name,'') || ' ' || COALESCE(fl.last_name,'')), ''),
+          COALESCE((SELECT c.customer_name FROM calls c WHERE c.customer_id = fl.customer_id AND normalize_phone(c.caller_phone) = fl.phone_normalized ORDER BY c.start_time DESC LIMIT 1),
+            'Caller ID: ' || fl.phone_normalized)) as name,
+        fl.phone_normalized as phone, fl.hcp_created_at as contact_date,
+        'matched' as match_status, 'call' as lead_type, NULL as answer_status, NULL::int as duration,
+        fl.has_inspection_scheduled as inspection_scheduled, fl.has_inspection_completed as inspection_completed,
+        false as inspection_completed_inferred,
+        fl.has_estimate_sent as estimate_sent, fl.has_estimate_approved as estimate_approved,
+        fl.has_job_scheduled as job_scheduled, fl.has_job_completed as job_completed, fl.has_invoice as revenue_closed,
+        fl.est_approved_cents / 100.0 as approved_revenue, (fl.insp_invoice_cents + fl.treat_invoice_cents) / 100.0 as invoiced_revenue,
+        '[]'::json as invoice_breakdown, fl.est_sent_cents / 100.0 as estimate_value,
+        NULL as job_description, NULL as service_address, fl.client_flag_reason, NULL::timestamptz as client_flag_at,
+        NULL as lost_reason, false as reactivated
+      FROM mv_funnel_leads fl
+      WHERE fl.customer_id = $1 AND fl.phone_normalized = ANY($2) AND fl.lead_source = $3
+    `, [customerId, missingPhones, source === 'google_ads' ? 'google_ads' : source === 'gbp' ? 'gbp' : 'other']);
+    const seen = new Set();
+    for (const row of missingRows) {
+      if (!seen.has(row.phone)) { seen.add(row.phone); filtered.push(row); }
+    }
+  }
+  
+  // Compute reactivated badge from mv_funnel_leads (cross-phone check)
+  const { rows: reactivatedRows } = await pool.query(`
+    SELECT DISTINCT fl.phone_normalized as phone
+    FROM mv_funnel_leads fl
+    WHERE fl.customer_id = $1 ${mvSourceWhere}
+      AND fl.first_ga_touch_time IS NOT NULL
+      AND fl.hcp_created_at < fl.first_ga_touch_time - INTERVAL '7 days'
+      AND NOT COALESCE(fl.exclude_from_ga_roas, false)
+  `, [customerId]);
+  const reactivatedSet = new Set(reactivatedRows.map(r => r.phone));
+  for (const lead of filtered) {
+    if (lead.phone && reactivatedSet.has(lead.phone)) lead.reactivated = true;
+  }
+  
+  filtered.sort((a, b) => new Date(b.contact_date) - new Date(a.contact_date));
+  return filtered;
 });
 
 // Jobber lead spreadsheet helper

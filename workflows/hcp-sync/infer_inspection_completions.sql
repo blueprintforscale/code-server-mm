@@ -1,0 +1,65 @@
+                                                                                                pg_get_functiondef                                                                                                
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ CREATE OR REPLACE FUNCTION public.infer_inspection_completions(p_customer_id bigint DEFAULT NULL::bigint)                                                                                                       +
+  RETURNS integer                                                                                                                                                                                                +
+  LANGUAGE plpgsql                                                                                                                                                                                               +
+ AS $function$                                                                                                                                                                                                   +
+ DECLARE                                                                                                                                                                                                         +
+   total INT := 0;                                                                                                                                                                                               +
+   cnt INT;                                                                                                                                                                                                      +
+ BEGIN                                                                                                                                                                                                           +
+   -- Signal 1: Has TREATMENT estimate sent/approved AND inspection was scheduled                                                                                                                                +
+   UPDATE hcp_inspections ins SET                                                                                                                                                                                +
+     inferred_complete = true,                                                                                                                                                                                   +
+     inferred_complete_reason = 'estimate_exists',                                                                                                                                                               +
+     inferred_complete_at = COALESCE(                                                                                                                                                                            +
+       (SELECT MIN(eg.sent_at) FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ins.hcp_customer_id AND eg.status IN ('sent','approved','declined') AND eg.count_revenue AND eg.estimate_type = 'treatment'),+
+       ins.scheduled_at                                                                                                                                                                                          +
+     )                                                                                                                                                                                                           +
+   WHERE ins.record_status = 'active'                                                                                                                                                                            +
+     AND ins.status NOT IN ('complete rated', 'complete unrated', 'user canceled', 'pro canceled')                                                                                                               +
+     AND ins.inferred_complete = false                                                                                                                                                                           +
+     AND ins.scheduled_at IS NOT NULL                                                                                                                                                                            +
+     AND EXISTS (SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ins.hcp_customer_id AND eg.status IN ('sent','approved','declined') AND eg.estimate_type = 'treatment')                           +
+     AND (p_customer_id IS NULL OR ins.customer_id = p_customer_id);                                                                                                                                             +
+   GET DIAGNOSTICS cnt = ROW_COUNT;                                                                                                                                                                              +
+   total := total + cnt;                                                                                                                                                                                         +
+                                                                                                                                                                                                                 +
+   -- Signal 2: Has job                                                                                                                                                                                          +
+   UPDATE hcp_inspections ins SET                                                                                                                                                                                +
+     inferred_complete = true,                                                                                                                                                                                   +
+     inferred_complete_reason = 'job_exists',                                                                                                                                                                    +
+     inferred_complete_at = COALESCE(                                                                                                                                                                            +
+       (SELECT MIN(j.scheduled_at) FROM hcp_jobs j WHERE j.hcp_customer_id = ins.hcp_customer_id AND j.record_status = 'active'),                                                                                +
+       ins.scheduled_at                                                                                                                                                                                          +
+     )                                                                                                                                                                                                           +
+   WHERE ins.record_status = 'active'                                                                                                                                                                            +
+     AND ins.status NOT IN ('complete rated', 'complete unrated', 'user canceled', 'pro canceled')                                                                                                               +
+     AND ins.inferred_complete = false                                                                                                                                                                           +
+     AND EXISTS (SELECT 1 FROM hcp_jobs j WHERE j.hcp_customer_id = ins.hcp_customer_id AND j.record_status = 'active')                                                                                          +
+     AND (p_customer_id IS NULL OR ins.customer_id = p_customer_id);                                                                                                                                             +
+   GET DIAGNOSTICS cnt = ROW_COUNT;                                                                                                                                                                              +
+   total := total + cnt;                                                                                                                                                                                         +
+                                                                                                                                                                                                                 +
+   -- Signal 3: Has invoice                                                                                                                                                                                      +
+   UPDATE hcp_inspections ins SET                                                                                                                                                                                +
+     inferred_complete = true,                                                                                                                                                                                   +
+     inferred_complete_reason = 'invoice_exists',                                                                                                                                                                +
+     inferred_complete_at = COALESCE(                                                                                                                                                                            +
+       (SELECT MIN(i.invoice_date) FROM hcp_invoices i WHERE i.hcp_customer_id = ins.hcp_customer_id AND i.status NOT IN ('canceled','voided')),                                                                 +
+       ins.scheduled_at                                                                                                                                                                                          +
+     )                                                                                                                                                                                                           +
+   WHERE ins.record_status = 'active'                                                                                                                                                                            +
+     AND ins.status NOT IN ('complete rated', 'complete unrated', 'user canceled', 'pro canceled')                                                                                                               +
+     AND ins.inferred_complete = false                                                                                                                                                                           +
+     AND EXISTS (SELECT 1 FROM hcp_invoices i WHERE i.hcp_customer_id = ins.hcp_customer_id AND i.status NOT IN ('canceled','voided'))                                                                           +
+     AND (p_customer_id IS NULL OR ins.customer_id = p_customer_id);                                                                                                                                             +
+   GET DIAGNOSTICS cnt = ROW_COUNT;                                                                                                                                                                              +
+   total := total + cnt;                                                                                                                                                                                         +
+                                                                                                                                                                                                                 +
+   RETURN total;                                                                                                                                                                                                 +
+ END;                                                                                                                                                                                                            +
+ $function$                                                                                                                                                                                                      +
+ 
+(1 row)
+

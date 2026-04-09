@@ -205,8 +205,14 @@ fastify.get('/clients/:customerId/funnel', async (request) => {
   }
   if (result.error) return result;
 
-  // DISABLED 2026-04-08: getHcpFunnel now handles repeat caller filtering, bot detection,
-  // and attribution_override exclusions that get_dashboard_metrics() doesn't know about.
+  // ====================================================================
+  // CRITICAL: DO NOT RE-ENABLE THIS BLOCK. (Disabled 2026-04-08)
+  // getHcpFunnel is now the single source of truth for lead counts.
+  // get_dashboard_metrics() does NOT handle: bot detection, repeat caller
+  // filtering, attribution overrides, or reactivation protocol.
+  // Re-enabling this will cause funnel/drawer count mismatches.
+  // See: RULES.md Section 21 (bot detection), Section 22 (reactivation)
+  // ====================================================================
   if (false && source === 'google_ads' && date_from && date_to) {
     const { rows: metricsRows } = await pool.query(
       `SELECT quality_leads, actual_quality_leads, ad_spend, cpl, total_closed_rev, total_open_est_rev, roas, all_time_rev, all_time_spend, guarantee, total_insp_booked FROM get_dashboard_metrics($1::date, $2::date) WHERE customer_id = $3`,
@@ -2271,6 +2277,13 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
     LEFT JOIN mv_funnel_leads fl ON fl.hcp_customer_id = l.hcp_customer_id AND fl.customer_id = $1
     ORDER BY l.contact_date DESC
   `, [customerId, startDate, endDate]);
+  // ====================================================================
+  // CRITICAL: This post-filter ensures drawer count matches funnel count.
+  // DO NOT remove or bypass. The drawer SQL and funnel SQL use different
+  // query paths. This post-filter uses the funnel's quality_phones as
+  // the authoritative phone list and fills any missing leads from fallback.
+  // See: project_funnel_accuracy_session.md for full context.
+  // ====================================================================
   // Post-filter: use getHcpFunnel's quality_phones as single source of truth
   const sourceWhere = source === 'google_ads' ? 'AND is_google_ads_call(c2.source, c2.source_name, c2.gclid)'
     : source === 'gbp' ? "AND c2.source = 'Google My Business' AND NOT is_google_ads_call(c2.source, c2.source_name, c2.gclid)"
@@ -2305,6 +2318,24 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
         NULL as lost_reason, false as reactivated
       FROM mv_funnel_leads fl
       WHERE fl.customer_id = $1 AND fl.phone_normalized = ANY($2) AND fl.lead_source = $3
+      UNION ALL
+      SELECT NULL, COALESCE(c.customer_name, 'Caller ID: ' || normalize_phone(c.caller_phone)),
+        normalize_phone(c.caller_phone), c.start_time, 'unmatched', 'call',
+        CASE WHEN c.answered THEN 'answered' ELSE 'missed' END, c.duration,
+        false, false, false, false, false, false, false, false, 0, 0, '[]'::json, 0,
+        NULL, NULL, NULL, NULL, NULL, false
+      FROM calls c WHERE c.customer_id IN (SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1)
+        AND normalize_phone(c.caller_phone) = ANY($2) AND c.first_call = true
+        AND NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl WHERE fl.customer_id = $1 AND fl.phone_normalized = normalize_phone(c.caller_phone))
+      UNION ALL
+      SELECT NULL, f.customer_name, normalize_phone(f.customer_phone), f.submitted_at, 'unmatched', 'form',
+        NULL, NULL, false, false, false, false, false, false, false, false, 0, 0, '[]'::json, 0,
+        NULL, NULL, NULL, NULL, NULL, false
+      FROM form_submissions f WHERE f.customer_id IN (SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1)
+        AND normalize_phone(f.customer_phone) = ANY($2)
+        AND NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl WHERE fl.customer_id = $1 AND fl.phone_normalized = normalize_phone(f.customer_phone))
+        AND NOT EXISTS (SELECT 1 FROM calls c WHERE c.customer_id IN (SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1)
+          AND normalize_phone(c.caller_phone) = normalize_phone(f.customer_phone) AND c.first_call = true)
     `, [customerId, missingPhones, source === 'google_ads' ? 'google_ads' : source === 'gbp' ? 'gbp' : 'other']);
     const seen = new Set();
     for (const row of missingRows) {

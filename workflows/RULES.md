@@ -127,6 +127,8 @@ When Steps 1-4 fail to match an HCP customer to CallRail, attempt a name-based m
 
 **Treatment keywords for Priority 4:** `remediation`, `dry fog`, `treatment`, `removal`, `abatement`, `encapsulation`, `instapure`, `everpure`, `demolition`.
 
+**job_type enhancement (added 2026-04-08):** When an HCP job has `job_fields.job_type.name` set (e.g., "Remediation Job", "Inspection/Sampling", "Treatment"), this value is appended to the description before keyword matching. This means a job described as "Complementary Assessment" with job_type "Remediation Job" will correctly match the "remediation" keyword and classify as a job. The job_type is also stored in `hcp_jobs.job_type` for reference. The API lead-spreadsheet query and the ETL both use this concatenated approach. An explicit override for job_type IN ("Remediation Job", "Redo/Warranty") is kept as a safety net in the API for types that don't contain standard treatment keywords. Clients using job_type: Chad Adams, Rob Brown (SoCal + SD), Daniel Clay, David Watts, Aaron Meadows, Ron Payne.
+
 **Rationale:** Ambiguous job descriptions (e.g., "Services") under $1K default to inspection. Jobs with explicit treatment keywords are trusted at $100+.
 
 **Flags:** If classification used Priority 4 (amount fallback), the `classification_fallback` exception flag is set.
@@ -569,8 +571,15 @@ When the VA sees multiple records at the same address, they can:
 | Missing Date | Inferred From | Condition |
 |-------------|---------------|-----------|
 | Inspection scheduled | MIN(hcp_created_at, estimate_sent_at, invoice_date) | Inspection record exists + downstream activity |
-| Inspection completed | Estimate sent_at | Estimate exists but no completion date |
+| Inspection completed | Treatment estimate sent_at | **Treatment** estimate exists but no completion date (inspection-fee estimates do NOT count) |
+| Inspection completed | Job exists | Any active job record for this customer |
 | Inspection completed | Invoice date | Invoice exists but no completion date |
+
+**What does NOT trigger inspection completion inference:**
+- **Inspection-type estimates** (e.g., $100 inspection fee) — these are the inspection itself, not proof it was completed
+- **Past scheduled date** — an inspection scheduled 2+ days ago is not proof it happened; the client may have canceled or rescheduled
+
+**Implementation:** `infer_inspection_completions()` PostgreSQL function (3 signals: treatment estimate, job, invoice). Called by ETL after HCP data sync.
 
 **Funnel stage priority (highest wins):**
 1. Job paid → 2. Job completed → 3. Job scheduled → 4. Estimate approved → 5. Estimate sent → 6. Inspection completed → 7. Inspection paid → 8. Inspection scheduled → 9. Lead → 10. Unknown
@@ -785,26 +794,32 @@ Removes a specific exception flag from the array. If no flags remain after remov
 
 **Problem:** Coordinated bot campaigns click Google Ads (generating real GCLIDs and costing ad spend), then submit forms with gibberish data. They inflate contact counts and waste ad budget.
 
-**Detection (AND logic — both conditions required):**
+**Detection (OR logic — either condition triggers exclusion):**
 
-| Condition | Pattern | Example |
-|-----------|---------|---------|
-| Two-word all-caps name, both 8+ chars | `customer_name ~ '^[A-Z]{8,}\s+[A-Z]{8,}$'` | `WCKMKQFSQLZRGIWSSL AYPUDBNGLUNDHHVHUZXLTR` |
-| Low vowel ratio (< 0.25) | `vowel_count / total_chars < 0.25` | Bot: 0.07, Real names: 0.25+ (MCKINNON CHAPPELL = 0.25, safe) |
+| Condition | Pattern | Vowel Check | Example |
+|-----------|---------|-------------|---------|
+| `source = 'Direct'` + two-word 8+ uppercase name | `customer_name ~ '^[A-Z]{8,}\s+[A-Z]{8,}$'` AND `source = 'Direct'` | Not needed | `WCKMKQFSQLZRGIWSSL AYPUDBNGLUNDHHVHUZXLTR` |
+| Other source + two-word 8+ uppercase name + low vowels | Same name pattern AND `source != 'Direct'` | < 0.25 | `DIUDUDUDHFXHXGHX SJJDUDJYDJDYDUHEGD` (source = 'Google Ads') |
+
+**Why the source shortcut works:** Real Google Ads form leads always have `source = 'Google Ads'` from CallRail's session tracking. Bots click the ad (getting a GCLID) but submit the form directly, so CallRail tags them as `source = 'Direct'`. No legitimate lead has `source = 'Direct'` with a two-word gibberish uppercase name — verified with zero false positives across all data.
 
 **Vowel ratio formula:** `LENGTH(REGEXP_REPLACE(UPPER(name), '[^AEIOU]', '', 'g')) / LENGTH(REGEXP_REPLACE(name, '\s', '', 'g'))`
 
-**Why this approach:** The dotted gmail pattern (`e.tog.oduw.6.6.3@gmail.com`) was considered as a signal but rejected — it false-positives on legitimate emails like `d.c.loring76@gmail.com` (Dimitrius Loring), `m.collingwood414@gmail.com` (Marguerite Collingwood), and `c.gambino.11.11@gmail.com` (Carlotta Gambino). Single-word gibberish names like `KRYSTYNA` or `CHARLY` also cause false positives if the character threshold is too low. The two-word 8+ char requirement with low vowel ratio has zero false positives in testing.
+**Why 0.25 for non-Direct sources:** Some bot names contain enough random vowels to pass 0.2 (e.g., ratio 0.216). The lowest real name is MCKINNON CHAPPELL at exactly 0.25, so strict `< 0.25` is safe. Only needed for `source != 'Direct'` forms where the source shortcut can't apply.
 
-**Known gap:** ~128 single-word gibberish bot forms are not caught by this rule. They are less common and can be addressed later with a tighter single-word pattern if needed.
+**Rejected signals:**
+- Dotted gmail pattern: false-positives on `d.c.loring76@gmail.com`, `m.collingwood414@gmail.com`, `c.gambino.11.11@gmail.com`
+- Single-word name detection: false-positives on `KRYSTYNA`, `CHARLY`, `SKYLAR`
 
 **Characteristics of these bots:**
-- Often `source = 'Direct'` in CallRail (session tracking doesn't attribute to Google Ads)
+- `source = 'Direct'` in CallRail (session tracking doesn't attribute to Google Ads)
 - Many have `gclid IS NOT NULL` (bot clicked a Google Ad before submitting)
 - Often no phone number, or fake phone numbers
 - Same base email pattern across many clients (slight dot variations)
 
-**Impact (last 90 days):** 352 bot forms across clients detected and excluded. ~128 single-word bot forms remain uncaught (accepted trade-off to avoid false positives).
+**Known gap:** ~90 single-word gibberish bot forms are not caught. They can be addressed later with a tighter single-word pattern if needed.
+
+**Impact (last 90 days):** 440 bot forms across 25 clients detected and excluded with zero false positives.
 
 **Implementation:** Filter in `unmatched_forms` CTE in `getHcpFunnel()`. Also mark `form_submissions.is_spam = true` during ETL for forms matching these patterns.
 

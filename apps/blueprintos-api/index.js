@@ -2928,6 +2928,7 @@ fastify.get('/clients/:customerId/monthly-trend', async (request) => {
       FROM calls c
       WHERE c.customer_id IN (SELECT customer_id FROM client_ids)
         AND is_google_ads_call(c.source, c.source_name, c.gclid)
+        AND c.first_call = true
         AND c.start_time >= DATE_TRUNC('month', CURRENT_DATE) - ($2::int - 1) * INTERVAL '1 month'
         AND ($3 IS NULL OR c.gclid IN (SELECT gclid FROM campaign_filter))
       UNION
@@ -2943,6 +2944,15 @@ fastify.get('/clients/:customerId/monthly-trend', async (request) => {
           WHERE c2.customer_id IN (SELECT customer_id FROM client_ids)
             AND is_google_ads_call(c2.source, c2.source_name, c2.gclid)
             AND normalize_phone(c2.caller_phone) = normalize_phone(fs.customer_phone))
+        -- Exclude bot form spam: Direct source + gibberish name OR low vowel ratio
+        AND NOT (
+          fs.customer_name ~ '^[A-Z]{8,}\\s+[A-Z]{8,}$'
+          AND (
+            COALESCE(fs.source, '') = 'Direct'
+            OR LENGTH(REGEXP_REPLACE(UPPER(fs.customer_name), '[^AEIOU]', '', 'g'))::float
+               / NULLIF(LENGTH(REGEXP_REPLACE(fs.customer_name, '\\s', '', 'g')), 0) < 0.25
+          )
+        )
     ),
     -- Spam phones from GHL
     spam_phones AS (
@@ -3016,6 +3026,7 @@ fastify.get('/clients/:customerId/monthly-trend', async (request) => {
       WHERE hc.customer_id IN (SELECT customer_id FROM client_ids)
         AND hc.hcp_created_at >= DATE_TRUNC('month', CURRENT_DATE) - ($2::int - 1) * INTERVAL '1 month'
         AND COALESCE(hc.client_flag_reason, '') NOT IN ('spam', 'out_of_area', 'wrong_service')
+        AND COALESCE(hc.attribution_override, '') NOT IN ('not_google_ads','organic','referral','thumbtack','yelp','direct')
         AND hc.phone_normalized NOT IN (SELECT phone FROM trend_spam_phones)
         AND (
           hc.attribution_override = 'google_ads'

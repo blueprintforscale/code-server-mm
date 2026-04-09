@@ -205,8 +205,9 @@ fastify.get('/clients/:customerId/funnel', async (request) => {
   }
   if (result.error) return result;
 
-  // Unify metrics with risk dashboard via get_dashboard_metrics (single source of truth)
-  if (source === 'google_ads' && date_from && date_to) {
+  // DISABLED 2026-04-08: getHcpFunnel now handles repeat caller filtering, bot detection,
+  // and attribution_override exclusions that get_dashboard_metrics() doesn't know about.
+  if (false && source === 'google_ads' && date_from && date_to) {
     const { rows: metricsRows } = await pool.query(
       `SELECT quality_leads, actual_quality_leads, ad_spend, cpl, total_closed_rev, total_open_est_rev, roas, all_time_rev, all_time_spend, guarantee, total_insp_booked FROM get_dashboard_metrics($1::date, $2::date) WHERE customer_id = $3`,
       [date_from, date_to, customerId]

@@ -474,13 +474,15 @@ def upsert_job(cur, customer_id, hcp_customer_id, job):
             description, invoice_number, total_amount_cents,
             original_estimate_id,
             status, scheduled_at, completed_at, hcp_created_at,
-            employee_name, employee_id, notes, tags, service_address
+            employee_name, employee_id, notes, tags, service_address,
+            job_type
         ) VALUES (
             %(job_id)s, %(cust_id)s, %(hcp_cust_id)s,
             %(desc)s, %(invoice)s, %(amount)s,
             %(est_id)s,
             %(status)s, %(scheduled)s, %(completed)s, %(created)s,
-            %(emp_name)s, %(emp_id)s, %(notes)s, %(tags)s, %(addr)s
+            %(emp_name)s, %(emp_id)s, %(notes)s, %(tags)s, %(addr)s,
+            %(job_type)s
         )
         ON CONFLICT (hcp_job_id) DO UPDATE SET
             description = EXCLUDED.description,
@@ -495,6 +497,7 @@ def upsert_job(cur, customer_id, hcp_customer_id, job):
             notes = EXCLUDED.notes,
             tags = EXCLUDED.tags,
             service_address = EXCLUDED.service_address,
+            job_type = EXCLUDED.job_type,
             updated_at = NOW()
     """, {
         'job_id': job.get('id'),
@@ -513,6 +516,7 @@ def upsert_job(cur, customer_id, hcp_customer_id, job):
         'notes': concat_notes(job.get('notes')),
         'tags': extract_tags(job.get('tags')),
         'addr': extract_address(job.get('address')),
+        'job_type': ((job.get('job_fields') or {}).get('job_type') or {}).get('name'),
     })
 
     # Try to set employee from assigned_employee
@@ -709,6 +713,7 @@ def match_callrail(cur, customer_id):
     Step 2: Email match via form_submissions (fallback for unmatched)
     Step 3: Phone match via form_submissions (catches form-only leads)
     Step 4: Phone match via webflow_submissions (Webflow forms with GCLIDs)
+    Step 5: Name match via GHL bridge (different phone, same person within 3 days)
     Returns total match count.
     """
     # Step 1: Match by phone — find the earliest CallRail call for each HCP customer's phone
@@ -822,7 +827,56 @@ def match_callrail(cur, customer_id):
     if webflow_matches:
         log.info(f'    Step 4: Matched {webflow_matches} via webflow_submissions')
 
-    return phone_matches + email_matches + form_phone_matches + webflow_matches
+    # Step 5: Name match via GHL bridge — for customers still unmatched,
+    # find GHL contacts with matching first+last name but different phone,
+    # then link to CallRail call on the GHL phone, within 3 days of HCP creation.
+    # Only matches when the name is unique in the customer account for the window.
+    cur.execute("""
+        UPDATE hcp_customers hc
+        SET
+            callrail_id = sub.callrail_id,
+            match_method = 'name',
+            updated_at = NOW()
+        FROM (
+            SELECT DISTINCT ON (hc2.hcp_customer_id)
+                hc2.hcp_customer_id,
+                c.callrail_id
+            FROM hcp_customers hc2
+            JOIN ghl_contacts gc
+                ON gc.customer_id = hc2.customer_id
+                AND LOWER(TRIM(gc.first_name)) = LOWER(TRIM(hc2.first_name))
+                AND LOWER(TRIM(gc.last_name)) = LOWER(TRIM(hc2.last_name))
+                AND gc.phone_normalized IS NOT NULL
+                AND gc.phone_normalized != hc2.phone_normalized
+            JOIN calls c
+                ON normalize_phone(c.caller_phone) = gc.phone_normalized
+                AND c.customer_id = hc2.customer_id
+            WHERE hc2.customer_id = %(cust_id)s
+              AND hc2.callrail_id IS NULL
+              AND hc2.phone_normalized IS NOT NULL
+              AND hc2.first_name IS NOT NULL AND TRIM(hc2.first_name) != ''
+              AND hc2.last_name IS NOT NULL AND TRIM(hc2.last_name) != ''
+              AND ABS(EXTRACT(EPOCH FROM hc2.hcp_created_at - c.start_time)) <= 3 * 86400
+              -- Uniqueness: no other HCP customer with same name within 3 days
+              AND NOT EXISTS (
+                  SELECT 1 FROM hcp_customers hc3
+                  WHERE hc3.customer_id = hc2.customer_id
+                    AND hc3.hcp_customer_id != hc2.hcp_customer_id
+                    AND LOWER(TRIM(hc3.first_name)) = LOWER(TRIM(hc2.first_name))
+                    AND LOWER(TRIM(hc3.last_name)) = LOWER(TRIM(hc2.last_name))
+                    AND ABS(EXTRACT(EPOCH FROM hc3.hcp_created_at - hc2.hcp_created_at)) <= 3 * 86400
+              )
+            ORDER BY hc2.hcp_customer_id, c.start_time ASC
+        ) sub
+        WHERE hc.hcp_customer_id = sub.hcp_customer_id
+          AND hc.customer_id = %(cust_id)s
+          AND hc.callrail_id IS NULL
+    """, {'cust_id': customer_id})
+    name_matches = cur.rowcount
+    if name_matches:
+        log.info(f'    Step 5: Matched {name_matches} via GHL name bridge')
+
+    return phone_matches + email_matches + form_phone_matches + webflow_matches + name_matches
 
 
 def detect_exceptions(cur, customer_id):
@@ -980,6 +1034,32 @@ def detect_exceptions(cur, customer_id):
           AND highest_option_cents = 0
           AND record_status IN ('active', 'option')
           AND count_revenue = true
+    """, {'cid': customer_id})
+
+    # 10d. Auto-fix: restore count_revenue on estimates that were previously $0/unknown
+    #      but now have real amounts and approval (placeholder -> filled in)
+    cur.execute("""
+        UPDATE hcp_estimates
+        SET count_revenue = true, updated_at = NOW()
+        WHERE customer_id = %(cid)s
+          AND estimate_type = 'treatment'
+          AND approved_total_cents >= 100000
+          AND record_status IN ('active', 'option')
+          AND count_revenue = false
+    """, {'cid': customer_id})
+
+    # 10d-2. Auto-fix: restore count_revenue on SENT treatment estimates with $1000+
+    #        Sent estimates are pipeline value and should count even before approval.
+    #        Some get false=count_revenue from prior placeholder state — this restores them.
+    cur.execute("""
+        UPDATE hcp_estimates
+        SET count_revenue = true, updated_at = NOW()
+        WHERE customer_id = %(cid)s
+          AND estimate_type = 'treatment'
+          AND status = 'sent'
+          AND highest_option_cents >= 100000
+          AND record_status IN ('active', 'option')
+          AND count_revenue = false
     """, {'cid': customer_id})
     # 10. Auto-fix: set count_revenue = false on canceled segments
     cur.execute("""
@@ -1235,8 +1315,11 @@ def pull_client(conn, customer_id, api_key, backfill=False):
                     original_estimate_id = job.get('original_estimate_id')
                     total_amount = job.get('total_amount_cents', 0) or job.get('total_amount', 0) or 0
 
+                    # Append job_type to description for keyword classification
+                    job_type_name = ((job.get('job_fields') or {}).get('job_type') or {}).get('name') or ''
+                    classify_text = (description + ' ' + job_type_name).strip()
                     classification = classify_job_or_inspection(
-                        description, original_estimate_id, total_amount
+                        classify_text, original_estimate_id, total_amount
                     )
 
                     if classification == 'inspection':
@@ -1450,7 +1533,7 @@ def main():
                     WHERE hcp_api_key IS NOT NULL
                       AND field_management_software = 'housecall_pro'
                       AND status = 'active'
-                    ORDER BY name
+                    ORDER BY (SELECT MAX(synced_at) FROM hcp_estimates e WHERE e.customer_id = clients.customer_id) NULLS FIRST
                 """)
             clients = cur.fetchall()
 

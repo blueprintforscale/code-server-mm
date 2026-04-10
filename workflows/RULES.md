@@ -933,6 +933,7 @@ For Google Ads leads, only count revenue (invoices, estimates) and funnel activi
   - GA form: CallRail form with `gclid IS NOT NULL` OR `source = 'Google Ads'`
   - GHL GCLID: `COALESCE(ghl_contacts.kpi_date_created, ghl_contacts.date_added)` where `gclid IS NOT NULL`. The `kpi_date_created` custom field overrides `date_added` for Webflow CSV imports where the default create date is the import date, not the form submission date.
 - **Filter:** All revenue columns (est_sent_cents, est_approved_cents, job_cents, invoice_cents, insp_invoice_cents, treat_invoice_cents) and all funnel flags (has_inspection_scheduled, etc.) only count records dated on or after `first_ga_touch_time`
+- **Same-day tolerance (Added 2026-04-10):** Comparison uses `::date` (date-only), not full timestamp. This catches "over-the-phone quote" scenarios where the rep creates an HCP estimate during the call (a few seconds/minutes BEFORE the CallRail GCLID timestamp finalizes when the call ends). Without this tolerance, legitimate same-day estimates were excluded due to timestamp precision. Affected 7 leads worth $107K across all clients (initially).
 - **Non-GA leads unaffected:** The post-touch filter only applies when `lead_source = 'google_ads'`. Other sources get all-time revenue as before.
 - **Impact:** ~$88K removed across portfolio (last 90 days), ~7% correction.
 - **Scope:** Currently only in `mv_funnel_leads`. Not yet in `v_lead_revenue` or `get_dashboard_metrics()`. Unification planned.

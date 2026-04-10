@@ -657,13 +657,14 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
         -- Exclude abandoned-as-spam phones (only populated when rate > 20%)
         AND NOT EXISTS (SELECT 1 FROM ghl_abandoned_phones ap WHERE ap.phone = normalize_phone(f2.customer_phone))
         -- Exclude bot form spam: Direct source shortcut OR vowel ratio check
+        -- Two-word: 8+ chars per word + (source=Direct OR low vowels)
+        -- Single-word: 12+ chars + source=Direct (zero false positives in 90-day data)
         AND NOT (
-          f2.customer_name ~ '^[A-Z]{8,}\\s+[A-Z]{8,}$'
-          AND (
-            f2.source = 'Direct'
-            OR LENGTH(REGEXP_REPLACE(UPPER(f2.customer_name), '[^AEIOU]', '', 'g'))::float
-                / NULLIF(LENGTH(REGEXP_REPLACE(f2.customer_name, '\\s', '', 'g')), 0) < 0.25
-          )
+          (f2.customer_name ~ '^[A-Z]{8,}\\s+[A-Z]{8,}$'
+            AND (f2.source = 'Direct'
+              OR LENGTH(REGEXP_REPLACE(UPPER(f2.customer_name), '[^AEIOU]', '', 'g'))::float
+                  / NULLIF(LENGTH(REGEXP_REPLACE(f2.customer_name, '\\s', '', 'g')), 0) < 0.25))
+          OR (f2.customer_name ~ '^[A-Z]{12,}$' AND f2.source = 'Direct')
         )
         -- 60-day repeat form filter
         AND (

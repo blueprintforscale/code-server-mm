@@ -2297,6 +2297,26 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
   const qualityPhoneSet = new Set(qualityPhones);
   let filtered = rows.filter(r => r.phone && qualityPhoneSet.has(r.phone));
   
+  // Find phones that have a matched HCP record in mv_funnel_leads but only unmatched in drawer rows
+  // (happens when drawer SQL excludes them via GHL spam filter without CRM activity rescue)
+  const drawerMatchedPhones = new Set(filtered.filter(r => r.match_status === 'matched').map(r => r.phone));
+  const sourceFilter = source === 'gbp' ? "AND lead_source = 'gbp'" 
+    : source === 'lsa' ? "AND lead_source = 'lsa'"
+    : source === 'google_ads' ? "AND lead_source = 'google_ads'" : '';
+  const { rows: hcpMatchedRows } = await pool.query(
+    `SELECT DISTINCT phone_normalized FROM mv_funnel_leads WHERE customer_id = $1 AND phone_normalized = ANY($2) ${sourceFilter}`,
+    [customerId, qualityPhones]
+  );
+  const hcpMatchedSet = new Set(hcpMatchedRows.map(r => r.phone_normalized));
+  
+  // For phones in mv_funnel_leads but only showing as unmatched in drawer, drop the unmatched (matched will be added by fallback)
+  filtered = filtered.filter(r => {
+    if (r.match_status === 'unmatched' && hcpMatchedSet.has(r.phone) && !drawerMatchedPhones.has(r.phone)) {
+      return false; // Drop the unmatched, let the fallback add the matched
+    }
+    return true;
+  });
+  
   // Fill missing phones from funnel that drawer SQL missed
   const drawerPhones = new Set(filtered.map(r => r.phone));
   const missingPhones = qualityPhones.filter(p => !drawerPhones.has(p));
@@ -2928,7 +2948,6 @@ fastify.get('/clients/:customerId/monthly-trend', async (request) => {
       FROM calls c
       WHERE c.customer_id IN (SELECT customer_id FROM client_ids)
         AND is_google_ads_call(c.source, c.source_name, c.gclid)
-        AND c.first_call = true
         AND c.start_time >= DATE_TRUNC('month', CURRENT_DATE) - ($2::int - 1) * INTERVAL '1 month'
         AND ($3 IS NULL OR c.gclid IN (SELECT gclid FROM campaign_filter))
       UNION
@@ -3009,6 +3028,7 @@ fastify.get('/clients/:customerId/monthly-trend', async (request) => {
       SELECT DISTINCT gc.phone_normalized as phone
       FROM ghl_contacts gc
       WHERE gc.customer_id IN (SELECT customer_id FROM client_ids)
+        AND gc.phone_normalized IS NOT NULL AND gc.phone_normalized != ''
         AND LOWER(gc.lost_reason) SIMILAR TO '%(spam|not a lead|wrong number|out of area|wrong service|abandoned)%'
         AND NOT EXISTS (SELECT 1 FROM hcp_customers hc3
           WHERE hc3.customer_id IN (SELECT customer_id FROM client_ids) AND hc3.phone_normalized = gc.phone_normalized
@@ -3019,45 +3039,37 @@ fastify.get('/clients/:customerId/monthly-trend', async (request) => {
             OR EXISTS (SELECT 1 FROM hcp_jobs j3 WHERE j3.hcp_customer_id = hc3.hcp_customer_id AND j3.record_status = 'active')
           ))
     ),
-    -- GA-attributed HCP customers (pre-filtered small set)
-    ga_hcp AS (
-      SELECT hc.hcp_customer_id, hc.phone_normalized, hc.hcp_created_at
-      FROM hcp_customers hc
-      WHERE hc.customer_id IN (SELECT customer_id FROM client_ids)
-        AND hc.hcp_created_at >= DATE_TRUNC('month', CURRENT_DATE) - ($2::int - 1) * INTERVAL '1 month'
-        AND COALESCE(hc.client_flag_reason, '') NOT IN ('spam', 'out_of_area', 'wrong_service')
-        AND COALESCE(hc.attribution_override, '') NOT IN ('not_google_ads','organic','referral','thumbtack','yelp','direct')
-        AND hc.phone_normalized NOT IN (SELECT phone FROM trend_spam_phones)
-        AND (
-          hc.attribution_override = 'google_ads'
-          OR hc.callrail_id LIKE 'WF_%'
-          OR EXISTS (SELECT 1 FROM calls ca WHERE ca.callrail_id = hc.callrail_id AND is_google_ads_call(ca.source, ca.source_name, ca.gclid))
-          OR EXISTS (SELECT 1 FROM form_submissions fs WHERE fs.customer_id IN (SELECT customer_id FROM client_ids)
-            AND (fs.callrail_id = hc.callrail_id OR fs.phone_normalized = hc.phone_normalized)
-            AND fs.gclid IS NOT NULL AND fs.gclid != '')
-          OR EXISTS (SELECT 1 FROM ghl_contacts gc WHERE gc.customer_id = hc.customer_id
-            AND (gc.phone_normalized = hc.phone_normalized OR (hc.email IS NOT NULL AND hc.email != '' AND LOWER(gc.email) = LOWER(hc.email)))
-            AND gc.gclid IS NOT NULL AND gc.gclid != '')
-        )
+    -- Aggregate funnel data by CallRail lead date using mv_funnel_leads (same source as main funnel)
+    -- Compute lead_date per mv_funnel_leads record: LEAST(callrail_date, hcp_created_at)
+    fl_with_lead_date AS (
+      SELECT fl.*,
+        DATE_TRUNC('month', LEAST(
+          fl.hcp_created_at,
+          (SELECT MIN(c.start_time) FROM calls c WHERE c.callrail_id = fl.callrail_id),
+          (SELECT MIN(fs.submitted_at) FROM form_submissions fs WHERE fs.callrail_id = fl.callrail_id)
+        ))::date AS lead_month
+      FROM mv_funnel_leads fl
+      WHERE fl.customer_id IN (SELECT customer_id FROM client_ids)
+        AND fl.lead_source = 'google_ads'
     ),
-    -- Aggregate funnel data only on GA-attributed customers
     monthly_hcp AS (
-      SELECT DATE_TRUNC('month', hc.hcp_created_at)::date as month_start,
-        COUNT(DISTINCT hc.hcp_customer_id) as matched_leads,
-        COUNT(DISTINCT hc.hcp_customer_id) FILTER (WHERE EXISTS (
-          SELECT 1 FROM hcp_inspections i WHERE i.hcp_customer_id = hc.hcp_customer_id
-            AND i.record_status = 'active' AND (i.status IN ('scheduled','complete rated','complete unrated','in progress') OR i.scheduled_at IS NOT NULL)
-        )) as inspections_booked,
-        COUNT(DISTINCT hc.hcp_customer_id) FILTER (WHERE EXISTS (
-          SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = hc.hcp_customer_id
-            AND eg.status = 'approved' AND eg.count_revenue
-        )) as estimates_approved,
+      SELECT fl.lead_month AS month_start,
+        COUNT(DISTINCT fl.phone_normalized) as matched_leads,
+        COUNT(DISTINCT fl.phone_normalized) FILTER (WHERE fl.has_inspection_scheduled) as inspections_booked,
+        COUNT(DISTINCT fl.phone_normalized) FILTER (WHERE fl.has_estimate_approved) as estimates_approved,
         COALESCE(SUM(
-          COALESCE((SELECT SUM(eg.approved_total_cents) FROM v_estimate_groups eg
-            WHERE eg.hcp_customer_id = hc.hcp_customer_id AND eg.status = 'approved' AND eg.count_revenue), 0)
-        ), 0) / 100.0 as revenue
-      FROM ga_hcp hc
-      GROUP BY 1
+          CASE WHEN fl.treat_invoice_cents > 0 OR fl.est_approved_cents > 0
+            THEN fl.insp_invoice_cents + GREATEST(fl.treat_invoice_cents, fl.est_approved_cents)
+            ELSE fl.job_cents + fl.insp_invoice_cents END
+        ), 0) / 100.0 as revenue,
+        COALESCE(SUM(fl.invoice_cents + fl.insp_invoice_cents), 0) / 100.0 as invoice_revenue
+      FROM fl_with_lead_date fl
+      LEFT JOIN spam_phones sp ON sp.phone = fl.phone_normalized
+      WHERE sp.phone IS NULL
+        AND NOT COALESCE(fl.ghl_spam, false)
+        AND COALESCE(fl.client_flag_reason, '') NOT IN ('spam', 'out_of_area', 'wrong_service')
+        AND fl.lead_month >= DATE_TRUNC('month', CURRENT_DATE) - ($2::int - 1) * INTERVAL '1 month'
+      GROUP BY fl.lead_month
     )
     SELECT m.month_start,
       TO_CHAR(m.month_start, 'Mon YYYY') as label,
@@ -3068,8 +3080,10 @@ fastify.get('/clients/:customerId/monthly-trend', async (request) => {
       COALESCE(ml.abandoned, 0) as abandoned,
       COALESCE(ms.spend, 0) as spend,
       COALESCE(mh.revenue, 0) as revenue,
+      COALESCE(mh.invoice_revenue, 0) as invoice_revenue,
       CASE WHEN COALESCE(ml.leads, 0) > 0 THEN ROUND(COALESCE(ms.spend, 0) / ml.leads, 2) ELSE 0 END as cpl,
       CASE WHEN COALESCE(ms.spend, 0) > 0 THEN ROUND(COALESCE(mh.revenue, 0) / ms.spend, 2) ELSE 0 END as roas,
+      CASE WHEN COALESCE(ms.spend, 0) > 0 THEN ROUND(COALESCE(mh.invoice_revenue, 0) / ms.spend, 2) ELSE 0 END as invoice_roas,
       COALESCE(ms.conversions, 0) as conversions,
       COALESCE(mh.inspections_booked, 0) as inspections_booked,
       COALESCE(mh.estimates_approved, 0) as estimates_approved,

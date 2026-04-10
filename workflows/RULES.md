@@ -794,12 +794,13 @@ Removes a specific exception flag from the array. If no flags remain after remov
 
 **Problem:** Coordinated bot campaigns click Google Ads (generating real GCLIDs and costing ad spend), then submit forms with gibberish data. They inflate contact counts and waste ad budget.
 
-**Detection (OR logic — either condition triggers exclusion):**
+**Detection (OR logic — any condition triggers exclusion):**
 
 | Condition | Pattern | Vowel Check | Example |
 |-----------|---------|-------------|---------|
 | `source = 'Direct'` + two-word 8+ uppercase name | `customer_name ~ '^[A-Z]{8,}\s+[A-Z]{8,}$'` AND `source = 'Direct'` | Not needed | `WCKMKQFSQLZRGIWSSL AYPUDBNGLUNDHHVHUZXLTR` |
 | Other source + two-word 8+ uppercase name + low vowels | Same name pattern AND `source != 'Direct'` | < 0.25 | `DIUDUDUDHFXHXGHX SJJDUDJYDJDYDUHEGD` (source = 'Google Ads') |
+| `source = 'Direct'` + single-word 12+ uppercase name | `customer_name ~ '^[A-Z]{12,}$'` AND `source = 'Direct'` | Not needed | `SUNDAZKXANJNCXCPUQQT` (single word) |
 
 **Why the source shortcut works:** Real Google Ads form leads always have `source = 'Google Ads'` from CallRail's session tracking. Bots click the ad (getting a GCLID) but submit the form directly, so CallRail tags them as `source = 'Direct'`. No legitimate lead has `source = 'Direct'` with a two-word gibberish uppercase name — verified with zero false positives across all data.
 
@@ -817,7 +818,9 @@ Removes a specific exception flag from the array. If no flags remain after remov
 - Often no phone number, or fake phone numbers
 - Same base email pattern across many clients (slight dot variations)
 
-**Known gap:** ~90 single-word gibberish bot forms are not caught. They can be addressed later with a tighter single-word pattern if needed.
+**Single-word bot detection (Added 2026-04-10):** Single-word 12+ char uppercase names with `source = 'Direct'` are also bots. Verified with zero false positives in 90-day data — only 1 Google Ads form ever matched and it was a placeholder (`GETAQUOTETODAY`). Catches 46 additional bot forms across all clients.
+
+**Remaining known gap:** Single-word bots from `source != 'Direct'` are not caught. Real names like `KRYSTYNA`, `CHARLY`, `SKYLAR` would false-positive on a more aggressive single-word rule.
 
 **Impact (last 90 days):** 440 bot forms across 25 clients detected and excluded with zero false positives.
 

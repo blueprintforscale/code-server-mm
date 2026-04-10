@@ -717,6 +717,7 @@ def match_callrail(cur, customer_id):
     Returns total match count.
     """
     # Step 1: Match by phone — find the earliest CallRail call for each HCP customer's phone
+    # Also matches calls from child customer accounts (for clients with multiple CallRail accounts)
     cur.execute("""
         UPDATE hcp_customers hc
         SET
@@ -729,7 +730,8 @@ def match_callrail(cur, customer_id):
                 c.callrail_id
             FROM hcp_customers hc2
             JOIN calls c ON normalize_phone(c.caller_phone) = hc2.phone_normalized
-                AND c.customer_id = hc2.customer_id
+                AND (c.customer_id = hc2.customer_id
+                     OR c.customer_id IN (SELECT customer_id FROM clients WHERE parent_customer_id = hc2.customer_id))
             WHERE hc2.customer_id = %(cust_id)s
               AND hc2.phone_normalized IS NOT NULL
               AND c.caller_phone IS NOT NULL
@@ -783,7 +785,8 @@ def match_callrail(cur, customer_id):
             FROM hcp_customers hc2
             JOIN form_submissions f
                 ON hc2.phone_normalized = normalize_phone(f.customer_phone)
-                AND f.customer_id = hc2.customer_id
+                AND (f.customer_id = hc2.customer_id
+                     OR f.customer_id IN (SELECT customer_id FROM clients WHERE parent_customer_id = hc2.customer_id))
             WHERE hc2.customer_id = %(cust_id)s
               AND hc2.callrail_id IS NULL
               AND hc2.phone_normalized IS NOT NULL
@@ -811,7 +814,8 @@ def match_callrail(cur, customer_id):
             FROM hcp_customers hc2
             JOIN webflow_submissions ws
                 ON hc2.phone_normalized = ws.phone_normalized
-                AND ws.customer_id = hc2.customer_id
+                AND (ws.customer_id = hc2.customer_id
+                     OR ws.customer_id IN (SELECT customer_id FROM clients WHERE parent_customer_id = hc2.customer_id))
             WHERE hc2.customer_id = %(cust_id)s
               AND hc2.callrail_id IS NULL
               AND hc2.phone_normalized IS NOT NULL

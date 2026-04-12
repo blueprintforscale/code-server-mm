@@ -1698,7 +1698,8 @@ app.get('/api/client-portal/funnel', requireClientToken, async (req, res) => {
     if (source === 'google_ads') {
       hcSourceWhere = `AND (hc.attribution_override = 'google_ads'
         OR EXISTS (SELECT 1 FROM calls c WHERE c.callrail_id = hc.callrail_id AND (c.gclid IS NOT NULL OR c.classified_source = 'google_ads') AND COALESCE(c.source_name,'') <> 'LSA')
-        OR EXISTS (SELECT 1 FROM form_submissions f WHERE f.customer_id = hc.customer_id AND (f.callrail_id = hc.callrail_id OR normalize_phone(f.customer_phone) = hc.phone_normalized OR (hc.email IS NOT NULL AND LOWER(f.customer_email) = LOWER(hc.email))) AND (f.gclid IS NOT NULL OR f.source ILIKE '%google ads%')))`;
+        OR EXISTS (SELECT 1 FROM form_submissions f WHERE f.customer_id = hc.customer_id AND (f.callrail_id = hc.callrail_id OR normalize_phone(f.customer_phone) = hc.phone_normalized OR (hc.email IS NOT NULL AND LOWER(f.customer_email) = LOWER(hc.email))) AND (f.gclid IS NOT NULL OR f.source ILIKE '%google ads%'))
+        OR EXISTS (SELECT 1 FROM ghl_contacts gc WHERE gc.customer_id = hc.customer_id AND (gc.phone_normalized = hc.phone_normalized OR (hc.email IS NOT NULL AND hc.email != '' AND LOWER(gc.email) = LOWER(hc.email))) AND gc.gclid IS NOT NULL AND gc.gclid != ''))`;
       crSourceWhere = `AND (c2.gclid IS NOT NULL OR c2.classified_source = 'google_ads') AND COALESCE(c2.source_name,'') <> 'LSA'`;
       fmSourceWhere = `AND (f2.gclid IS NOT NULL OR f2.source ILIKE '%google ads%')`;
     } else if (source === 'lsa') {
@@ -2077,7 +2078,8 @@ app.get('/api/client-portal/recent-activity', requireClientToken, async (req, re
     if (source === 'google_ads') {
       hcSourceWhere = `AND (hc.attribution_override = 'google_ads'
         OR EXISTS (SELECT 1 FROM calls c WHERE c.callrail_id = hc.callrail_id AND (c.gclid IS NOT NULL OR c.classified_source = 'google_ads') AND COALESCE(c.source_name,'') <> 'LSA')
-        OR EXISTS (SELECT 1 FROM form_submissions f WHERE f.customer_id = hc.customer_id AND (f.callrail_id = hc.callrail_id OR normalize_phone(f.customer_phone) = hc.phone_normalized OR (hc.email IS NOT NULL AND LOWER(f.customer_email) = LOWER(hc.email))) AND (f.gclid IS NOT NULL OR f.source ILIKE '%google ads%')))`;
+        OR EXISTS (SELECT 1 FROM form_submissions f WHERE f.customer_id = hc.customer_id AND (f.callrail_id = hc.callrail_id OR normalize_phone(f.customer_phone) = hc.phone_normalized OR (hc.email IS NOT NULL AND LOWER(f.customer_email) = LOWER(hc.email))) AND (f.gclid IS NOT NULL OR f.source ILIKE '%google ads%'))
+        OR EXISTS (SELECT 1 FROM ghl_contacts gc WHERE gc.customer_id = hc.customer_id AND (gc.phone_normalized = hc.phone_normalized OR (hc.email IS NOT NULL AND hc.email != '' AND LOWER(gc.email) = LOWER(hc.email))) AND gc.gclid IS NOT NULL AND gc.gclid != ''))`;
     } else if (source === 'lsa') {
       hcSourceWhere = `AND (hc.attribution_override = 'lsa'
         OR EXISTS (SELECT 1 FROM calls c WHERE c.callrail_id = hc.callrail_id AND c.source_name = 'LSA'))`;
@@ -2364,7 +2366,8 @@ app.get('/api/client-portal/funnel/leads', requireClientToken, async (req, res) 
     if (source === 'google_ads') {
       hcSourceWhere = `AND (COALESCE(hc.attribution_override,'') = 'google_ads'
         OR EXISTS (SELECT 1 FROM calls c WHERE c.callrail_id = hc.callrail_id AND (c.gclid IS NOT NULL OR c.classified_source = 'google_ads') AND COALESCE(c.source_name,'') <> 'LSA')
-        OR EXISTS (SELECT 1 FROM form_submissions f WHERE f.customer_id = hc.customer_id AND (f.callrail_id = hc.callrail_id OR normalize_phone(f.customer_phone) = hc.phone_normalized OR (hc.email IS NOT NULL AND LOWER(f.customer_email) = LOWER(hc.email))) AND (f.gclid IS NOT NULL OR f.source ILIKE '%google ads%')))`;
+        OR EXISTS (SELECT 1 FROM form_submissions f WHERE f.customer_id = hc.customer_id AND (f.callrail_id = hc.callrail_id OR normalize_phone(f.customer_phone) = hc.phone_normalized OR (hc.email IS NOT NULL AND LOWER(f.customer_email) = LOWER(hc.email))) AND (f.gclid IS NOT NULL OR f.source ILIKE '%google ads%'))
+        OR EXISTS (SELECT 1 FROM ghl_contacts gc WHERE gc.customer_id = hc.customer_id AND (gc.phone_normalized = hc.phone_normalized OR (hc.email IS NOT NULL AND hc.email != '' AND LOWER(gc.email) = LOWER(hc.email))) AND gc.gclid IS NOT NULL AND gc.gclid != ''))`;
       crSourceWhere = `AND (c2.gclid IS NOT NULL OR c2.classified_source = 'google_ads') AND COALESCE(c2.source_name,'') <> 'LSA'`;
       fmSourceWhere = `AND (f2.gclid IS NOT NULL OR f2.source ILIKE '%google ads%')`;
     } else if (source === 'lsa') {
@@ -2668,7 +2671,8 @@ app.get('/api/cohort/funnel', requireAuth, async (req, res) => {
     if (sourceForFilter === 'google_ads') {
       hcSourceWhere = `AND (hc.attribution_override = 'google_ads'
         OR EXISTS (SELECT 1 FROM calls c WHERE c.callrail_id = hc.callrail_id AND (c.gclid IS NOT NULL OR c.classified_source = 'google_ads') AND COALESCE(c.source_name,'') <> 'LSA')
-        OR EXISTS (SELECT 1 FROM form_submissions f WHERE f.customer_id = hc.customer_id AND (f.callrail_id = hc.callrail_id OR normalize_phone(f.customer_phone) = hc.phone_normalized OR (hc.email IS NOT NULL AND LOWER(f.customer_email) = LOWER(hc.email))) AND (f.gclid IS NOT NULL OR f.source ILIKE '%google ads%')))`;
+        OR EXISTS (SELECT 1 FROM form_submissions f WHERE f.customer_id = hc.customer_id AND (f.callrail_id = hc.callrail_id OR normalize_phone(f.customer_phone) = hc.phone_normalized OR (hc.email IS NOT NULL AND LOWER(f.customer_email) = LOWER(hc.email))) AND (f.gclid IS NOT NULL OR f.source ILIKE '%google ads%'))
+        OR EXISTS (SELECT 1 FROM ghl_contacts gc WHERE gc.customer_id = hc.customer_id AND (gc.phone_normalized = hc.phone_normalized OR (hc.email IS NOT NULL AND hc.email != '' AND LOWER(gc.email) = LOWER(hc.email))) AND gc.gclid IS NOT NULL AND gc.gclid != ''))`;
     } else if (source === 'lsa') {
       hcSourceWhere = `AND (hc.attribution_override = 'lsa'
         OR EXISTS (SELECT 1 FROM calls c WHERE c.callrail_id = hc.callrail_id AND c.source_name = 'LSA'))`;
@@ -2746,7 +2750,8 @@ app.get('/api/cohort/funnel', requireAuth, async (req, res) => {
       if (sourceForFilter === 'google_ads') {
         jcSourceWhere = `AND (jc.attribution_override = 'google_ads'
           OR EXISTS (SELECT 1 FROM calls c WHERE c.callrail_id = jc.callrail_id AND (c.gclid IS NOT NULL OR c.classified_source = 'google_ads') AND COALESCE(c.source_name,'') <> 'LSA')
-          OR EXISTS (SELECT 1 FROM form_submissions f WHERE f.customer_id = jc.customer_id AND (f.callrail_id = jc.callrail_id OR normalize_phone(f.customer_phone) = jc.phone_normalized) AND (f.gclid IS NOT NULL OR f.source ILIKE '%google ads%')))`;
+          OR EXISTS (SELECT 1 FROM form_submissions f WHERE f.customer_id = jc.customer_id AND (f.callrail_id = jc.callrail_id OR normalize_phone(f.customer_phone) = jc.phone_normalized) AND (f.gclid IS NOT NULL OR f.source ILIKE '%google ads%'))
+          OR EXISTS (SELECT 1 FROM ghl_contacts gc WHERE gc.customer_id = jc.customer_id AND (gc.phone_normalized = jc.phone_normalized OR (jc.email IS NOT NULL AND jc.email != '' AND LOWER(gc.email) = LOWER(jc.email))) AND gc.gclid IS NOT NULL AND gc.gclid != ''))`;
       } else if (source === 'lsa') {
         jcSourceWhere = `AND (jc.attribution_override = 'lsa'
           OR EXISTS (SELECT 1 FROM calls c WHERE c.callrail_id = jc.callrail_id AND c.source_name = 'LSA'))`;

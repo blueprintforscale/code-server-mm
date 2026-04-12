@@ -55,6 +55,8 @@ td.tier-ads-risk { border-left: 4px solid #CC3333 !important; background: #fde8e
 td.tier-funnel-risk { border-left: 4px solid #d4553a !important; background: #fef0ec !important; color: #9a3412 !important; font-weight: 700; border-left-style: dashed !important; }
 td.tier-flag { border-left: 4px solid #b8860b !important; background: #fef9e7 !important; color: #92400e !important; font-weight: 600; }
 td.tier-healthy { border-left: 4px solid #38761D !important; background: #ecfdf5 !important; color: #065f46 !important; font-weight: 600; }
+tr.manual-risk { outline: 3px dashed #CC3333; outline-offset: -2px; }
+.tlc-badge { display:inline-block; background:#CC3333; color:#fff; font-size:8px; font-weight:700; padding:1px 5px; border-radius:3px; margin-left:5px; vertical-align:middle; letter-spacing:0.5px; }
 .status-cell { font-weight: 700; font-size: 11px; text-transform: uppercase; }
 tbody tr:nth-child(even) td { background: #faf9f6; }
 tbody tr:nth-child(odd) td { background: #fff; }
@@ -65,7 +67,8 @@ tbody tr:hover td { background: #f5f3ee !important; }
 
 /* Detail drawer */
 tr.detail-row td { padding: 0; cursor: default; }
-tr.detail-row:hover { background: #faf8f4 !important; }
+tr.detail-row:hover td { background: #faf8f4 !important; }
+tr.detail-row:hover td table td { background: transparent !important; }
 .detail-content { padding: 16px 24px; background: #faf8f4; }
 .detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
 .detail-section { overflow-wrap: break-word; word-wrap: break-word; min-width: 0; }
@@ -189,6 +192,7 @@ td.editable-budget:hover { outline: 2px solid #000; outline-offset: -2px; }
         <th data-key="trailing_3mo_roas" data-type="num" data-drill="revenue">3mo ROAS</th>
         <th data-key="on_cal_14d" data-type="num" data-drill="calendar">On Cal</th>
         <th data-key="days_since_lead" data-type="num" data-drill="leads">Stale</th>
+        <th data-key="days_since_live_contact" data-type="num" data-drill="summary">Contact</th>
         <th data-key="guarantee" data-type="num" data-drill="revenue">Guarantee</th>
         <th data-key="call_answer_rate" data-type="num" data-drill="summary" class="col-group-start">Answer</th>
         <th data-key="spam_rate" data-type="num" data-drill="spam">Spam</th>
@@ -202,7 +206,7 @@ td.editable-budget:hover { outline: 2px solid #000; outline-offset: -2px; }
       </tr>
     </thead>
     <tbody id="dashBody">
-      <tr><td colspan="20" class="loading">Loading dashboard...</td></tr>
+      <tr><td colspan="21" class="loading">Loading dashboard...</td></tr>
     </tbody>
   </table>
 </div>
@@ -380,7 +384,7 @@ async function loadData() {
     document.getElementById('lastUpdated').textContent = 'Updated: ' + new Date().toLocaleTimeString();
   } catch (err) {
     document.getElementById('dashBody').innerHTML =
-      '<tr><td colspan="20" class="loading" style="color:#CC3333">Error: ' + err.message + '</td></tr>';
+      '<tr><td colspan="21" class="loading" style="color:#CC3333">Error: ' + err.message + '</td></tr>';
   }
 }
 
@@ -408,6 +412,10 @@ function sortData(data) {
   return [...data].sort((a, b) => {
     // Default sort: within each status tier, non-recovering first
     if (sortKey === 'sort_priority') {
+      // Manual risk clients cluster after Both Risk (sort_priority 1) but before everything else
+      const aKey = a.sort_priority === 1 ? 0 : a.manual_risk ? 1 : 2;
+      const bKey = b.sort_priority === 1 ? 0 : b.manual_risk ? 1 : 2;
+      if (aKey !== bKey) return aKey - bKey;
       if (a.sort_priority !== b.sort_priority) return a.sort_priority - b.sort_priority;
       // Drift badges float to top of their status group (not shown for Risk)
       const aDrift = (a.status !== 'Risk' && hasDriftBadge(a)) ? 0 : 1;
@@ -812,11 +820,11 @@ function renderTable() {
 
   const tbody = document.getElementById('dashBody');
   tbody.innerHTML = '';
-  if (!sorted.length) { tbody.innerHTML = '<tr><td colspan="20" class="loading">No clients match filters</td></tr>'; return; }
+  if (!sorted.length) { tbody.innerHTML = '<tr><td colspan="21" class="loading">No clients match filters</td></tr>'; return; }
 
   sorted.forEach(r => {
     const tr = document.createElement('tr');
-    tr.className = 'data-row';
+    tr.className = 'data-row' + (r.manual_risk ? ' manual-risk' : '');
     tr.innerHTML = buildRow(r);
     // Per-cell click: detect column and open appropriate drill-down
     tr.querySelectorAll('td').forEach((td, colIdx) => {
@@ -970,6 +978,15 @@ function daysBg(r) {
   if(r.months_in_program===2&&r.days_since_lead>=14) return 'bg-yellow';
   return '';
 }
+function contactBg(r) {
+  const d = r.days_since_live_contact;
+  const c = r.contact_cadence;
+  if (c === null) return ''; // opted out
+  if (d === null || d === undefined || d < 0) return ''; // no data or future event
+  if (d > c + 3) return 'bg-red';
+  if (d > c - 2) return 'bg-yellow';
+  return '';
+}
 function ansBg(r) {
   if(!r.call_answer_rate) return '';
   if(r.call_answer_rate<0.6) return 'bg-red';
@@ -1089,6 +1106,35 @@ function recoveryArrow(r) {
   return ' <span style="font-size:10px;color:' + (recovering ? upColor : downColor) + '" title="' + (recovering ? 'Recovering' : 'Not yet recovering') + '">' + (recovering ? '&#9650;' : '&#9660;') + '</span>';
 }
 
+function pendingStatusBadge(r) {
+  if (!r.pending_status || !r.pending_streak) return '';
+  const isWorsening = (r.pending_status === 'Risk' && r.status !== 'Risk')
+    || (r.pending_status === 'Flag' && r.status === 'Healthy');
+  const arrow = isWorsening ? '\u2197' : '\u2198';
+  // Colors match the pending status category
+  const color = r.pending_status === 'Risk' ? '#991b1b'
+    : r.pending_status === 'Flag' ? '#92400e'
+    : '#065f46';
+  const bg = r.pending_status === 'Risk' ? '#fde8e8'
+    : r.pending_status === 'Flag' ? '#fef9e7'
+    : '#D1FAE5';
+  const border = r.pending_status === 'Risk' ? '#CC3333'
+    : r.pending_status === 'Flag' ? '#b8860b'
+    : '#38761D';
+  // Asymmetric thresholds: Into Risk=1d, Healthy→Flag=2d, Risk→Flag=3d, Flag→Healthy=3d, Risk→Healthy=5d
+  const needed = r.pending_status === 'Risk' ? 1
+    : r.pending_status === 'Flag' && r.status === 'Healthy' ? 2
+    : r.pending_status === 'Flag' && r.status === 'Risk' ? 3
+    : r.pending_status === 'Healthy' && r.status === 'Risk' ? 5
+    : 3;
+  const label = arrow + ' ' + r.pending_status + ' (' + r.pending_streak + '/' + needed + ')';
+  const tip = 'Pending: computed ' + r.pending_status + ' for ' + r.pending_streak
+    + ' of ' + needed + ' days needed. Status remains ' + r.status + ' until confirmed.';
+  return ' <span style="display:inline-block;padding:1px 6px;border-radius:10px;font-size:9px;font-weight:700;background:'
+    + bg + ';color:' + color + ';border:1px solid ' + border
+    + ';vertical-align:middle;cursor:help" title="' + tip + '">' + label + '</span>';
+}
+
 function daysInStatusBadge(r) {
   if (!r.days_in_status || r.status === 'Healthy') return '';
   const days = r.days_in_status;
@@ -1117,7 +1163,7 @@ function cplSpikeBadge(r) {
 function volumeAlertBadge(r) {
   if (!r.lead_volume_change || r.lead_volume_change >= -0.3) return '';
   const dropPct = Math.abs(Math.round(r.lead_volume_change * 100));
-  return ' <span style="display:inline-block;padding:1px 6px;border-radius:10px;font-size:9px;font-weight:700;background:#FDE8E4;color:#B91C1C;border:1px solid #FECACA;vertical-align:middle;cursor:help" title="Lead volume dropped ' + dropPct + '% vs prior 30 days">Volume</span>';
+  return ' <span style="display:inline-block;padding:1px 6px;border-radius:10px;font-size:9px;font-weight:700;background:#FDE8E4;color:#B91C1C;border:1px solid #FECACA;vertical-align:middle;cursor:help" title="Lead volume dropped ' + dropPct + '% vs prior 30 days">Vol \u2193' + dropPct + '%</span>';
 }
 
 function _cplDriftInfo(r) {
@@ -1143,6 +1189,8 @@ function _volDriftInfo(r) {
 }
 
 function driftBadge(r) {
+  // Hide for Risk clients — they already have triggers calling out the problem
+  if (r.status === 'Risk') return '';
   const cd = _cplDriftInfo(r);
   const vd = _volDriftInfo(r);
   if (!cd && !vd) return '';
@@ -1185,7 +1233,7 @@ function buildRow(r) {
         return '<span style="font-weight:700;font-size:12px">' + esc(biz) + '</span><br><span style="font-size:9px;opacity:0.6;letter-spacing:0.3px">' + esc(owner) + '</span>';
       }
       return '<span style="font-weight:700;font-size:12px">' + esc(r.client_name) + '</span>';
-    })()}${recoveryArrow(r)}</span><span style="margin-left:auto;white-space:nowrap">${driftBadge(r)}${volumeAlertBadge(r)}${cplSpikeBadge(r)}${daysInStatusBadge(r)}</span></div></td>
+    })()}${recoveryArrow(r)}</span><span style="margin-left:auto;white-space:nowrap">${r.manual_risk ? '<span class="tlc-badge">NEEDS TLC</span>' : ''}${pendingStatusBadge(r)}${driftBadge(r)}${volumeAlertBadge(r)}${cplSpikeBadge(r)}${daysInStatusBadge(r)}</span></div></td>
     <td style="font-size:11px;color:#666">${esc(r.ads_manager||'')}</td>
     <td class="col-group-start">${r.quality_leads}</td>
     <td class="${leadBg(r)}">${r.quality_count}</td>
@@ -1208,6 +1256,7 @@ function buildRow(r) {
     <td class="${roas3moBg(r)}" style="line-height:1.2">${fmt3moRoas(r)}</td>
     <td class="${calBg(r)}">${r.on_cal_14d}/${r.on_cal_total}</td>
     <td class="${daysBg(r)}">${daysStr}d</td>
+    <td class="${contactBg(r)}" title="${r.last_live_contact_date ? 'Last: ' + new Date(r.last_live_contact_date).toLocaleDateString() : 'No contact logged'}" style="cursor:pointer" onclick="event.stopPropagation();logContact(${r.customer_id})">${r.contact_cadence === null ? '—' : r.days_since_live_contact !== null && r.days_since_live_contact >= 0 ? r.days_since_live_contact + 'd' + (r.attempts_since_last_contact > 0 ? ' (' + r.attempts_since_last_contact + (r.attempts_since_last_contact === 1 ? ' try' : ' tries') + ')' : '') : '—'}</td>
     <td class="${guarBg(r)}">${guarStr}${guarWarn}</td>
     <td class="${ansBg(r)} col-group-start">${ansStr}</td>
     <td class="${spamBg(r)}">${(r.spam_rate*100).toFixed(0)}%</td>
@@ -1428,7 +1477,7 @@ async function toggleDetail(r, tr, drillType) {
     }
   }
 
-  detailTr.innerHTML = `<td colspan="20"><div class="detail-content" style="text-align:left">
+  detailTr.innerHTML = `<td colspan="21"><div class="detail-content" style="text-align:left">
     <div style="max-width:600px;margin-bottom:12px">
       ${trajectoryHtml}
       ${driftHtml}
@@ -1489,7 +1538,14 @@ async function loadLeadsDrill(el, r, start, end) {
     const now = new Date();
     const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
     const dayOfMonth = now.getDate();
-    const projected = Math.round(curLeads / (dayOfMonth / daysInMonth));
+    const paceFrac = curMonth.projection_pace_fraction ? parseFloat(curMonth.projection_pace_fraction) : null;
+    const recentAvg = curMonth.projection_recent_avg != null ? parseInt(curMonth.projection_recent_avg) : null;
+    const fraction = paceFrac && paceFrac > 0 ? paceFrac : dayOfMonth / daysInMonth;
+    const paceProj = Math.round(curLeads / fraction);
+    const weight = dayOfMonth / daysInMonth;
+    const projected = recentAvg != null && recentAvg > 0
+      ? Math.round(paceProj * weight + recentAvg * (1 - weight))
+      : paceProj;
     if (prevLeads > 0) {
       const paceChange = ((projected - prevLeads) / prevLeads * 100).toFixed(0);
       paceDetail = `${curLeads} leads so far (day ${dayOfMonth}/${daysInMonth}), projected ${projected} for the full month vs ${prevLeads} last month`;
@@ -1535,7 +1591,15 @@ function buildSparkline(history) {
   const dayOfMonth = now.getDate();
   const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
   const currentActual = leads[n - 1];
-  const projected = dayOfMonth > 0 ? Math.round(currentActual / (dayOfMonth / daysInMonth)) : currentActual;
+  const curMonth = history[history.length - 1];
+  const paceFrac = curMonth.projection_pace_fraction ? parseFloat(curMonth.projection_pace_fraction) : null;
+  const recentAvg = curMonth.projection_recent_avg != null ? parseInt(curMonth.projection_recent_avg) : null;
+  const fraction = paceFrac && paceFrac > 0 ? paceFrac : (dayOfMonth > 0 ? dayOfMonth / daysInMonth : 1);
+  const paceProj = Math.round(currentActual / fraction);
+  const weight = dayOfMonth / daysInMonth;
+  const projected = recentAvg != null && recentAvg > 0
+    ? Math.round(paceProj * weight + recentAvg * (1 - weight))
+    : paceProj;
 
   const max = Math.max(...leads, projected, 1);
   const stepX = (W - PADL - PAD) / Math.max(n - 1, 1);
@@ -1701,8 +1765,97 @@ async function loadCalendarDrill(el, r) {
 }
 
 async function loadSummaryDrill(el, r, start, end) {
-  // Trajectory box + insights already shown above — nothing extra needed
-  el.innerHTML = '';
+  if (r.has_locations) {
+    await loadLocationDrill(el, r, start, end);
+  } else {
+    el.innerHTML = '';
+  }
+}
+
+async function loadLocationDrill(el, r, start, end) {
+  const params = start && end ? `?start=${start}&end=${end}` : '';
+  const resp = await fetch(`/api/client/${r.customer_id}/drilldown/locations${params}`);
+  const data = await resp.json();
+  if (!data.has_locations) { el.innerHTML = ''; return; }
+
+  const fmtD = (v) => v !== null && v !== undefined ? '$' + Math.round(v).toLocaleString() : '\u2014';
+  const fmtR = (v) => v !== null && v !== undefined ? (v >= 10 ? v.toFixed(0) + 'x' : v.toFixed(2) + 'x') : '\u2014';
+  const fmtP = (v) => v !== null && v !== undefined ? Math.round(v * 100) + '%' : '\u2014';
+
+  const cols = ['Location','Leads','CPL','Book %','Revenue','ROAS','Spend'];
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:4px">';
+  html += '<thead><tr style="border-bottom:2px solid #e0ddd6">';
+  cols.forEach((c, i) => {
+    const align = i === 0 ? 'left' : 'right';
+    html += '<th style="text-align:' + align + ';padding:4px 8px;font-weight:600;font-size:10px;color:#666;text-transform:uppercase;letter-spacing:0.5px">' + c + '</th>';
+  });
+  html += '</tr></thead><tbody>';
+
+  data.locations.forEach(loc => {
+    const isOther = loc.location_name === 'Other';
+    const style = isOther ? 'opacity:0.5;font-style:italic' : '';
+    // CPL coloring
+    const cplVal = loc.cpl !== null ? Math.round(loc.cpl) : null;
+    const cplBg = cplVal === null ? '' : cplVal > 170 ? 'background:#fde8e8;color:#991b1b' : cplVal > 140 ? 'background:#fef9e7;color:#92400e' : '';
+    // ROAS coloring
+    const roasVal = loc.roas;
+    const roasBg = roasVal === null ? '' : roasVal >= 3 ? 'background:#d9ead3;color:#065f46' : roasVal >= 1 ? 'background:#fef9e7;color:#92400e' : roasVal > 0 ? 'background:#fde8e8;color:#991b1b' : '';
+
+    html += '<tr style="border-bottom:1px solid #f0ede6;' + style + '">'
+      + '<td style="padding:5px 8px;font-weight:700;font-size:12px">' + esc(loc.location_name) + '</td>'
+      + '<td style="padding:5px 8px;text-align:right">' + loc.leads + '</td>'
+      + '<td style="padding:5px 8px;text-align:right;' + cplBg + '">' + fmtD(loc.cpl) + '</td>'
+      + '<td style="padding:5px 8px;text-align:right">' + fmtP(loc.book_rate) + '</td>'
+      + '<td style="padding:5px 8px;text-align:right">' + fmtD(loc.revenue) + '</td>'
+      + '<td style="padding:5px 8px;text-align:right;' + roasBg + '">' + fmtR(loc.roas) + '</td>'
+      + '<td style="padding:5px 8px;text-align:right">' + fmtD(loc.spend) + '</td>'
+      + '</tr>';
+  });
+
+  // Totals row
+  if (data.total) {
+    html += '<tr style="border-top:2px solid #333;font-weight:700">'
+      + '<td style="padding:5px 8px">Total</td>'
+      + '<td style="padding:5px 8px;text-align:right">' + data.total.leads + '</td>'
+      + '<td style="padding:5px 8px;text-align:right">' + fmtD(data.total.cpl) + '</td>'
+      + '<td style="padding:5px 8px;text-align:right">' + fmtP(data.total.book_rate) + '</td>'
+      + '<td style="padding:5px 8px;text-align:right">' + fmtD(data.total.revenue) + '</td>'
+      + '<td style="padding:5px 8px;text-align:right">' + fmtR(data.total.roas) + '</td>'
+      + '<td style="padding:5px 8px;text-align:right">' + fmtD(data.total.spend) + '</td>'
+      + '</tr>';
+  }
+  html += '</tbody></table>';
+
+  // GCLID coverage note
+  if (data.gclid_coverage < 1) {
+    const pct = Math.round(data.gclid_coverage * 100);
+    html += '<div style="font-size:10px;color:#999;margin-top:6px">'
+      + 'Leads/revenue based on GCLID attribution (' + pct + '% coverage). Spend is complete.'
+      + '</div>';
+  }
+
+  el.innerHTML = html;
+}
+
+// NOTE: Trajectory and drift info is preserved in toggleDetail() above (lines ~1293-1460).
+// Currently rendered in the detail row header for all drilldowns.
+// TODO: Move to hover tooltip on client name cell.
+
+async function logContact(customerId) {
+  const type = prompt('Log contact type:\n1 = Call (talked to client)\n2 = Attempt (no answer)\n3 = Meeting\n\nEnter 1, 2, or 3:');
+  if (!type) return;
+  const typeMap = { '1': 'call', '2': 'call_attempt', '3': 'meeting' };
+  const interactionType = typeMap[type.trim()];
+  if (!interactionType) { alert('Invalid type'); return; }
+  const summary = prompt('Brief summary (optional):') || '';
+  try {
+    const resp = await fetch(`/api/client/${customerId}/log-contact`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: interactionType, summary, logged_by: 'Susie' })
+    });
+    if (resp.ok) { loadData(); } else { alert('Error logging contact'); }
+  } catch (e) { alert('Error: ' + e.message); }
 }
 
 function startBudgetEdit(td, r) {

@@ -143,7 +143,7 @@ call_metrics AS (
       WHERE ca.start_time::date BETWEEN p_start AND p_end
         AND (ca.source IN ('Google Ads', 'Google Ads 2') OR (ca.gclid IS NOT NULL AND ca.gclid != ''))
         AND ca.first_call = true
-        AND ca.answered = true
+        AND COALESCE(ca.classified_status, CASE WHEN ca.answered THEN 'answered' ELSE 'missed' END) = 'answered'
         AND EXTRACT(DOW FROM (ca.start_time AT TIME ZONE COALESCE(cb.timezone, 'America/New_York')))::INT
             = ANY(COALESCE(cb.biz_days, ARRAY[1,2,3,4,5]))
         AND (ca.start_time AT TIME ZONE COALESCE(cb.timezone, 'America/New_York'))::time

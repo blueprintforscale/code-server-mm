@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cohort Performance — Blueprint for Scale</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #1a1a2e; color: #e0e0e0; font-family: system-ui, -apple-system, sans-serif; padding: 20px; }
+    h1 { font-size: 24px; color: #fff; margin-bottom: 4px; }
+    .subtitle { color: #888; font-size: 13px; margin-bottom: 20px; font-style: italic; }
+    .controls { display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+    .controls label { font-size: 13px; color: #aaa; cursor: pointer; display: flex; align-items: center; gap: 4px; }
+    .controls input[type="checkbox"] { accent-color: #4ECDC4; }
+    .controls select { background: #2a2a4a; color: #e0e0e0; border: 1px solid #3a3a5a; padding: 6px 10px; border-radius: 4px; font-size: 13px; }
+    .chart-container { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 8px; padding: 20px; margin-bottom: 24px; position: relative; }
+    .chart-title { font-size: 18px; font-weight: bold; color: #fff; margin-bottom: 4px; }
+    .chart-subtitle { font-size: 12px; color: #888; margin-bottom: 12px; font-style: italic; }
+    canvas { width: 100% !important; }
+    .legend-grid { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 10px; }
+    .legend-item { font-size: 11px; color: #aaa; display: flex; align-items: center; gap: 4px; cursor: pointer; }
+    .legend-item:hover { color: #fff; }
+    .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+    .legend-item.excluded .legend-dot { opacity: 0.3; }
+    .legend-item.excluded { text-decoration: line-through; opacity: 0.5; }
+    a.back { color: #4ECDC4; text-decoration: none; font-size: 13px; margin-bottom: 12px; display: inline-block; }
+    a.back:hover { text-decoration: underline; }
+    .loading { color: #888; font-size: 14px; padding: 40px; text-align: center; }
+  </style>
+</head>
+<body>
+  <a class="back" href="/">&larr; Back to Risk Dashboard</a>
+  <h1>Cohort Performance</h1>
+  <p class="subtitle">How client performance scales over the 12-month program — Google Ads quality leads, CPL, and revenue per lead by program month</p>
+
+  <div class="controls">
+    <label><input type="checkbox" id="toggleSeasonal"> Seasonally Adjusted</label>
+    <label><input type="checkbox" id="toggleRolling" checked> 3-Mo Rolling Avg</label>
+    <label><input type="checkbox" id="toggleWeighted" checked> Spend-Weighted CPL</label>
+    <label>Cap at month: <select id="monthCap">
+      <option value="12">12</option>
+      <option value="10" selected>10</option>
+      <option value="8">8</option>
+      <option value="6">6</option>
+    </select></label>
+  </div>
+
+  <div class="chart-container">
+    <div class="chart-title">Quality Leads by Program Month</div>
+    <div class="chart-subtitle">Google Ads contacts minus GHL-flagged spam & abandoned</div>
+    <canvas id="leadsChart" height="90"></canvas>
+    <div class="legend-grid" id="leadsLegend"></div>
+  </div>
+
+  <div class="chart-container">
+    <div class="chart-title">CPL by Program Month</div>
+    <div class="chart-subtitle">Ad Spend / Quality Leads — lower is better</div>
+    <canvas id="cplChart" height="90"></canvas>
+    <div class="legend-grid" id="cplLegend"></div>
+  </div>
+
+  <div class="chart-container">
+    <div class="chart-title">Revenue Per Lead by Program Month</div>
+    <div class="chart-subtitle">ROAS revenue attributed to lead creation date — 90-day lag applied</div>
+    <canvas id="revChart" height="90"></canvas>
+    <div class="legend-grid" id="revLegend"></div>
+  </div>
+
+  <div class="loading" id="loadingMsg">Loading cohort data...</div>
+
+<script>
+const COLORS = [
+  '#4ECDC4','#FFE66D','#88D8B0','#AA96DA','#87CEEB','#DDA0DD','#F0E68C',
+  '#FF9AA2','#C9B1FF','#FFDAC1','#B5EAD7','#E2B0FF','#C7CEEA','#FFAAA5',
+  '#A8E6CF','#B5B8FF','#FFD700','#20B2AA','#FF69B4','#00CED1','#FF4500',
+  '#1E90FF','#E85D4D','#F38181','#CD853F','#7FFF00'
+];
+
+// Clients to exclude from averages (outliers) — shown faded
+const OUTLIER_IDS = new Set();
+// Clients to exclude entirely
+const EXCLUDE_IDS = new Set();
+// Clients with trimmed early months (missing CallRail data)
+const TRIM_ZEROS = {}; // customer_id -> first valid month
+
+let rawData = null;
+let leadsChartObj = null, cplChartObj = null, revChartObj = null;
+
+async function loadData() {
+  const res = await fetch('/api/cohort');
+  rawData = await res.json();
+
+  // Auto-detect outliers: clients with >150 quality leads in any month
+  rawData.clients.forEach(c => {
+    const maxLeads = Math.max(...c.months.map(m => m.quality_leads));
+    if (maxLeads > 150) OUTLIER_IDS.add(c.customer_id);
+  });
+
+  // Auto-detect clients with 4+ leading zero months (likely missing CallRail)
+  rawData.clients.forEach(c => {
+    let firstNonZero = c.months.findIndex(m => m.quality_leads > 0);
+    if (firstNonZero >= 4) {
+      TRIM_ZEROS[c.customer_id] = c.months[firstNonZero].program_month;
+    }
+  });
+
+  document.getElementById('loadingMsg').style.display = 'none';
+  renderAll();
+}
+
+function getMonthCap() {
+  return parseInt(document.getElementById('monthCap').value);
+}
+
+function isSeasonal() {
+  return document.getElementById('toggleSeasonal').checked;
+}
+
+function isRolling() {
+  return document.getElementById('toggleRolling').checked;
+}
+
+function isWeighted() {
+  return document.getElementById('toggleWeighted').checked;
+}
+
+function rollingAvg(arr, window = 3) {
+  if (!isRolling()) return arr;
+  const half = Math.floor(window / 2);
+  return arr.map((_, i) => {
+    const start = Math.max(0, i - half);
+    const end = Math.min(arr.length, i + half + 1);
+    const slice = arr.slice(start, end).filter(v => v !== null);
+    return slice.length > 0 ? slice.reduce((a, b) => a + b, 0) / slice.length : null;
+  });
+}
+
+function getClientMonths(client) {
+  const cap = getMonthCap();
+  const trimStart = TRIM_ZEROS[client.customer_id] || 1;
+  return client.months.filter(m =>
+    m.program_month <= cap &&
+    m.program_month >= trimStart &&
+    // Exclude partial months (month_end must be before start of current month)
+    new Date(m.month_end) < new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+  );
+}
+
+function buildAverage(metric, opts = {}) {
+  const cap = getMonthCap();
+  const monthData = {};
+  const seasonal = isSeasonal();
+  const weighted = opts.weighted && isWeighted();
+  const revLag = opts.revLag || false;
+  const lagCutoff = new Date();
+  lagCutoff.setDate(lagCutoff.getDate() - 90);
+
+  for (let m = 1; m <= cap; m++) { monthData[m] = { values: [], totalSpend: 0, totalLeads: 0 }; }
+
+  rawData.clients.forEach(c => {
+    if (OUTLIER_IDS.has(c.customer_id) || EXCLUDE_IDS.has(c.customer_id)) return;
+    const months = getClientMonths(c);
+    months.forEach(mo => {
+      if (mo.program_month > cap) return;
+      if (revLag && new Date(mo.month_end) > lagCutoff) return;
+
+      let val;
+      if (metric === 'quality_leads') {
+        val = seasonal ? mo.quality_leads_adjusted : mo.quality_leads;
+      } else if (metric === 'cpl') {
+        if (mo.quality_leads > 0 && mo.ad_spend > 0) {
+          val = mo.ad_spend / mo.quality_leads;
+          monthData[mo.program_month].totalSpend += mo.ad_spend;
+          monthData[mo.program_month].totalLeads += mo.quality_leads;
+        }
+      } else if (metric === 'rev_per_lead') {
+        if (mo.quality_leads > 0 && mo.revenue > 0) {
+          val = mo.revenue / mo.quality_leads;
+        }
+      }
+      if (val !== undefined && val !== null) {
+        monthData[mo.program_month].values.push(val);
+      }
+    });
+  }
+
+  const labels = [], values = [], counts = [];
+  for (let m = 1; m <= cap; m++) {
+    const md = monthData[m];
+    labels.push(`Mo ${m}`);
+    if (md.values.length >= 3) {
+      if (metric === 'cpl' && weighted && md.totalLeads > 0) {
+        values.push(md.totalSpend / md.totalLeads);
+      } else {
+        values.push(md.values.reduce((a, b) => a + b, 0) / md.values.length);
+      }
+      counts.push(md.values.length);
+    } else {
+      values.push(null);
+      counts.push(0);
+    }
+  }
+
+  return { labels, values: rollingAvg(values), counts };
+}
+
+function buildClientDatasets(metric, opts = {}) {
+  const cap = getMonthCap();
+  const seasonal = isSeasonal();
+  const revLag = opts.revLag || false;
+  const lagCutoff = new Date();
+  lagCutoff.setDate(lagCutoff.getDate() - 90);
+  const datasets = [];
+
+  rawData.clients.forEach((c, i) => {
+    if (EXCLUDE_IDS.has(c.customer_id)) return;
+    const months = getClientMonths(c);
+    const isOutlier = OUTLIER_IDS.has(c.customer_id);
+    const color = COLORS[i % COLORS.length];
+
+    const data = new Array(cap).fill(null);
+    months.forEach(mo => {
+      if (mo.program_month > cap) return;
+      if (revLag && new Date(mo.month_end) > lagCutoff) return;
+      let val;
+      if (metric === 'quality_leads') {
+        val = seasonal ? mo.quality_leads_adjusted : mo.quality_leads;
+      } else if (metric === 'cpl') {
+        val = (mo.quality_leads > 0 && mo.ad_spend > 0) ? mo.ad_spend / mo.quality_leads : null;
+      } else if (metric === 'rev_per_lead') {
+        val = (mo.quality_leads > 0 && mo.revenue > 0) ? mo.revenue / mo.quality_leads : null;
+      }
+      data[mo.program_month - 1] = val;
+    });
+
+    datasets.push({
+      label: c.name.split('|')[0].trim(),
+      data,
+      borderColor: color,
+      backgroundColor: color,
+      borderWidth: isOutlier ? 1 : 1.5,
+      pointRadius: isOutlier ? 0 : 2,
+      tension: 0.2,
+      hidden: false,
+      borderDash: isOutlier ? [4, 4] : [],
+      order: isOutlier ? 20 : 10,
+      _customerId: c.customer_id,
+      _isOutlier: isOutlier,
+    });
+  });
+
+  return datasets;
+}
+
+function makeChart(canvasId, legendId, metric, opts = {}) {
+  const cap = getMonthCap();
+  const avg = buildAverage(metric, opts);
+  const clientDatasets = buildClientDatasets(metric, opts);
+  const isCurrency = metric === 'cpl' || metric === 'rev_per_lead';
+
+  // Average dataset
+  const avgDataset = {
+    label: opts.weighted && isWeighted() ? 'Spend-Weighted Avg' : 'Cohort Average',
+    data: avg.values,
+    borderColor: opts.weighted && isWeighted() ? '#4ECDC4' : '#ffffff',
+    backgroundColor: opts.weighted && isWeighted() ? '#4ECDC4' : '#ffffff',
+    borderWidth: 4,
+    pointRadius: 5,
+    pointBackgroundColor: opts.weighted && isWeighted() ? '#4ECDC4' : '#ffffff',
+    tension: 0.3,
+    order: 1,
+    _isAverage: true,
+  };
+
+  // If CPL with weighted, also show unweighted as faded
+  const extraDatasets = [];
+  if (metric === 'cpl' && isWeighted()) {
+    const uwAvg = buildAverage(metric, { ...opts, weighted: false });
+    extraDatasets.push({
+      label: 'Unweighted Avg',
+      data: uwAvg.values,
+      borderColor: '#666',
+      borderWidth: 2,
+      borderDash: [6, 4],
+      pointRadius: 0,
+      tension: 0.3,
+      order: 2,
+    });
+  }
+
+  const labels = Array.from({ length: cap }, (_, i) => `Mo ${i + 1}`);
+
+  const config = {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [avgDataset, ...extraDatasets, ...clientDatasets]
+    },
+    options: {
+      responsive: true,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const val = ctx.parsed.y;
+              if (val === null) return null;
+              const prefix = isCurrency ? '$' : '';
+              return `${ctx.dataset.label}: ${prefix}${Math.round(val)}`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { color: '#2a2a4a33' },
+          ticks: { color: '#888' }
+        },
+        y: {
+          grid: { color: '#2a2a4a33' },
+          ticks: {
+            color: '#888',
+            callback: (v) => isCurrency ? `$${v}` : v
+          },
+          beginAtZero: true,
+        }
+      }
+    }
+  };
+
+  const canvas = document.getElementById(canvasId);
+  const chart = new Chart(canvas, config);
+
+  // Build custom legend
+  const legendEl = document.getElementById(legendId);
+  legendEl.innerHTML = '';
+  // Average first
+  const avgItem = document.createElement('span');
+  avgItem.className = 'legend-item';
+  avgItem.innerHTML = `<span class="legend-dot" style="background:${avgDataset.borderColor}"></span><strong>${avgDataset.label}</strong>`;
+  legendEl.appendChild(avgItem);
+  // Client lines
+  clientDatasets.forEach((ds, idx) => {
+    const item = document.createElement('span');
+    item.className = 'legend-item' + (ds._isOutlier ? ' excluded' : '');
+    item.innerHTML = `<span class="legend-dot" style="background:${ds.borderColor}"></span>${ds.label}`;
+    item.onclick = () => {
+      const dsIndex = idx + 1 + extraDatasets.length; // offset for avg + extras
+      chart.setDatasetVisibility(dsIndex, !chart.isDatasetVisible(dsIndex));
+      item.classList.toggle('excluded');
+      chart.update();
+    };
+    legendEl.appendChild(item);
+  });
+
+  // Add n= annotations via plugin
+  const nPlugin = {
+    id: 'nAnnotation',
+    afterDatasetsDraw(chart) {
+      const meta = chart.getDatasetMeta(0);
+      const ctx = chart.ctx;
+      ctx.save();
+      ctx.font = 'bold 12px system-ui';
+      ctx.textAlign = 'center';
+      meta.data.forEach((point, i) => {
+        if (avg.values[i] === null) return;
+        const val = Math.round(avg.values[i]);
+        const prefix = isCurrency ? '$' : '';
+        // Value label above
+        ctx.fillStyle = avgDataset.borderColor;
+        ctx.fillText(`${prefix}${val}`, point.x, point.y - 14);
+        // n= below
+        ctx.fillStyle = '#666';
+        ctx.font = '10px system-ui';
+        ctx.fillText(`n=${avg.counts[i]}`, point.x, point.y + 16);
+        ctx.font = 'bold 12px system-ui';
+      });
+      ctx.restore();
+    }
+  };
+  chart.config.options.plugins.nAnnotation = true;
+  config.plugins = [nPlugin];
+
+  // Recreate with plugin
+  chart.destroy();
+  return new Chart(canvas, config);
+}
+
+function renderAll() {
+  if (leadsChartObj) leadsChartObj.destroy();
+  if (cplChartObj) cplChartObj.destroy();
+  if (revChartObj) revChartObj.destroy();
+
+  leadsChartObj = makeChart('leadsChart', 'leadsLegend', 'quality_leads');
+  cplChartObj = makeChart('cplChart', 'cplLegend', 'cpl', { weighted: true });
+  revChartObj = makeChart('revChart', 'revLegend', 'rev_per_lead', { revLag: true });
+}
+
+// Re-render on control changes
+document.getElementById('toggleSeasonal').addEventListener('change', renderAll);
+document.getElementById('toggleRolling').addEventListener('change', renderAll);
+document.getElementById('toggleWeighted').addEventListener('change', renderAll);
+document.getElementById('monthCap').addEventListener('change', renderAll);
+
+loadData();
+</script>
+</body>
+</html>

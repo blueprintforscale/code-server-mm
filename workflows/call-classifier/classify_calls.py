@@ -78,12 +78,18 @@ def get_callrail_headers(api_key=None):
 
 
 def get_active_clients(db, client_filter=None):
-    """Get clients with CallRail company IDs configured."""
+    """Get clients with CallRail company IDs configured.
+
+    Returns one row per (customer_id, callrail_company_id). Clients with
+    additional_callrail_company_ids get multiple rows — all stored under
+    the same customer_id so funnel matching keeps working.
+    """
     cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     if client_filter:
         cur.execute("""
             SELECT customer_id, name, callrail_company_id, conversion_value,
-                   callrail_account_id, callrail_api_key
+                   callrail_account_id, callrail_api_key,
+                   additional_callrail_company_ids
             FROM clients
             WHERE callrail_company_id IS NOT NULL AND status = 'active'
               AND customer_id = %s
@@ -91,11 +97,18 @@ def get_active_clients(db, client_filter=None):
     else:
         cur.execute("""
             SELECT customer_id, name, callrail_company_id, conversion_value,
-                   callrail_account_id, callrail_api_key
+                   callrail_account_id, callrail_api_key,
+                   additional_callrail_company_ids
             FROM clients
             WHERE callrail_company_id IS NOT NULL AND status = 'active'
         """)
-    return cur.fetchall()
+    rows = cur.fetchall()
+    expanded = []
+    for r in rows:
+        expanded.append(r)
+        for extra in (r.get('additional_callrail_company_ids') or []):
+            expanded.append({**r, 'callrail_company_id': extra})
+    return expanded
 
 
 def normalize_phone(phone):
@@ -208,8 +221,11 @@ def store_calls(db, calls, company_id, customer_id):
                              source, medium, first_call, callrail_status, call_type,
                              tracker_id)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (callrail_id) DO UPDATE SET tracker_id = EXCLUDED.tracker_id
-                WHERE calls.tracker_id IS NULL
+            ON CONFLICT (callrail_id) DO UPDATE SET
+                duration = COALESCE(EXCLUDED.duration, calls.duration),
+                transcript = COALESCE(EXCLUDED.transcript, calls.transcript),
+                callrail_status = COALESCE(EXCLUDED.callrail_status, calls.callrail_status),
+                tracker_id = COALESCE(EXCLUDED.tracker_id, calls.tracker_id)
         """, (
             callrail_id, company_id, customer_id,
             call.get("customer_phone_number") or call.get("caller_number"),
@@ -502,6 +518,38 @@ def cmd_fetch(args):
         else:
             since = datetime.now(timezone.utc) - timedelta(hours=24)
 
+    # --- Backfill: re-fetch calls with NULL duration (fetched mid-call) ---
+    backfill_cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    backfill_cur.execute("""
+        SELECT DISTINCT c.customer_id, c.callrail_company_id,
+               cl.callrail_account_id, cl.callrail_api_key, cl.name,
+               MIN(c.start_time) as earliest
+        FROM calls c
+        JOIN clients cl ON c.customer_id = cl.customer_id
+        WHERE c.duration IS NULL
+          AND c.start_time >= NOW() - INTERVAL '4 hours'
+        GROUP BY c.customer_id, c.callrail_company_id,
+                 cl.callrail_account_id, cl.callrail_api_key, cl.name
+    """)
+    backfill_clients = backfill_cur.fetchall()
+    backfill_total = 0
+
+    if backfill_clients:
+        log.info(f"Backfilling NULL-duration calls for {len(backfill_clients)} clients")
+        for bc in backfill_clients:
+            try:
+                bf_since = bc["earliest"] - timedelta(minutes=1)
+                bf_calls = fetch_calls_for_company(
+                    bc["callrail_company_id"], bf_since,
+                    account_id=bc.get("callrail_account_id"),
+                    api_key=bc.get("callrail_api_key"))
+                bf_stored = store_calls(db, bf_calls, bc["callrail_company_id"], bc["customer_id"])
+                if bf_stored > 0:
+                    log.info(f"    [{bc['customer_id']}] {bc['name']}: backfilled {bf_stored} calls")
+                    backfill_total += bf_stored
+            except Exception as e:
+                log.warning(f"    Backfill error {bc['customer_id']}: {e}")
+
     log.info(f"Fetching all calls since {since.isoformat()} for {len(clients)} clients")
     total = 0
     errors = []
@@ -524,6 +572,9 @@ def cmd_fetch(args):
             log.error(f"    ERROR: {e}")
 
     # Auto-classify obvious spam (short/no transcript) — Google Ads calls only
+    # Both conditions required: short duration AND no transcript.
+    # Longer calls without transcripts go to AI classification (likely transcription failures).
+    # Calls with NULL duration are still in-progress — skip until backfill fills them in.
     update_cur = db.cursor()
     update_cur.execute("""
         UPDATE calls SET
@@ -532,7 +583,9 @@ def cmd_fetch(args):
             classification_attempts = 1,
             updated_at = NOW()
         WHERE classification IS NULL
-          AND (duration < 15 OR transcript IS NULL OR transcript = '')
+          AND duration IS NOT NULL
+          AND duration < 15
+          AND (transcript IS NULL OR transcript = '')
           AND (LOWER(source) LIKE '%%google%%' OR LOWER(medium) = 'cpc')
     """)
     auto_spam = update_cur.rowcount
@@ -544,6 +597,7 @@ def cmd_fetch(args):
     print(json.dumps({
         "status": "ok" if not errors else "errors",
         "fetched": total,
+        "backfilled": backfill_total,
         "auto_spam": auto_spam,
         "errors": errors,
     }))

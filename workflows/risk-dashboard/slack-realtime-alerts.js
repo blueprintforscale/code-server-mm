@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-require('dotenv').config({ path: __dirname + '/.env' });
 /**
  * Real-Time State Change Alerts — runs hourly via launchd
  *
@@ -30,11 +29,11 @@ const pool = new Pool({
   ssl: false,
 });
 
-const SLACK_TOKEN = process.env.SLACK_BOT_TOKEN;
+const SLACK_TOKEN = 'xoxb-6594692085893-10476528834625-otlCrGN5kiu31kQYWDvrCAwC';
 const NOTIFICATIONS_CHANNEL = 'C09AZ1MCLN7'; // #client_notifications
 
 const MANAGER_CHANNELS = {
-  'Martin': 'U06QCME7K5H',
+  'Martin': 'C0AN42R5YJE',
   'Luke':   'C08LQL3TPGA',
   'Nima':   'C09P10LJZJ5',
 };
@@ -207,9 +206,17 @@ async function main() {
   const dryRun = process.argv.includes('--dry-run');
   if (dryRun) console.log('=== DRY RUN MODE ===\n');
 
-  // 1. Get current dashboard state
-  const dashResult = await pool.query(`SELECT * FROM get_dashboard_with_risk()`);
+  // 1. Get current dashboard state + confirmed statuses
+  const [dashResult, confirmedResult] = await Promise.all([
+    pool.query(`SELECT d.*, c.slack_channel_id FROM get_dashboard_with_risk() d JOIN clients c ON c.customer_id = d.customer_id`),
+    pool.query(`SELECT customer_id, confirmed_status, confirmed_risk_type,
+                       pending_status, pending_streak FROM client_confirmed_status`)
+  ]);
   const currentRows = dashResult.rows.map(coerceRow);
+  const confirmedMap = {};
+  for (const c of confirmedResult.rows) {
+    confirmedMap[String(c.customer_id)] = c;
+  }
 
   // 2. Get last known state
   const lastResult = await pool.query(`SELECT * FROM alert_last_state`);
@@ -218,7 +225,24 @@ async function main() {
     lastState[r.customer_id] = r;
   }
 
-  // 3. Check for already-celebrated milestones
+  // 3. Check for already-sent pending alerts (only send once per pending direction)
+  const pendingAlertResult = await pool.query(`
+    SELECT customer_id, details->>'pending_status' AS pending_status
+    FROM alert_status_log
+    WHERE event_type = 'pending_heads_up'
+      AND NOT EXISTS (
+        SELECT 1 FROM alert_status_log a2
+        WHERE a2.customer_id = alert_status_log.customer_id
+          AND a2.event_type IN ('risk_entered','flag_entered','risk_resolved','flag_resolved')
+          AND a2.event_date > alert_status_log.event_date
+      )
+  `);
+  const sentPending = new Set();
+  for (const r of pendingAlertResult.rows) {
+    if (r.pending_status) sentPending.add(`${r.customer_id}_${r.pending_status}`);
+  }
+
+  // 4. Check for already-celebrated milestones
   const milestoneResult = await pool.query(`
     SELECT customer_id, event_type FROM alert_status_log
     WHERE event_type IN ('guarantee_hit', '30_leads')
@@ -250,45 +274,91 @@ async function main() {
     const channelId = row.slack_channel_id || null;
     const manager = row.ads_manager;
 
-    // ── Status transitions ──
+    // ── Status transitions (using CONFIRMED status, not raw computed) ──
+    const confirmed = confirmedMap[String(cid)];
+    const currStatus = confirmed ? confirmed.confirmed_status : row.status;
+    const currRiskType = confirmed ? (confirmed.confirmed_risk_type || '') : row.risk_type;
+
     if (last) {
       const prevStatus = last.status;
-      const currStatus = row.status;
 
-      // New Risk
+      // New Risk (confirmed)
       if (currStatus === 'Risk' && prevStatus !== 'Risk') {
-        console.log(`RISK: ${name} (${prevStatus} → Risk)`);
+        console.log(`RISK (confirmed): ${name} (${prevStatus} → Risk)`);
         const msg = formatRiskAlert(row);
         await sendToAll(msg, channelId, manager, dryRun);
-        await logEvent(cid, 'risk_entered', prevStatus, currStatus, row.risk_type, row.risk_triggers);
+        await logEvent(cid, 'risk_entered', prevStatus, currStatus, currRiskType, row.risk_triggers);
         alertCount++;
       }
 
-      // New Flag
+      // New Flag (confirmed)
       if (currStatus === 'Flag' && prevStatus === 'Healthy') {
-        console.log(`FLAG: ${name} (Healthy → Flag)`);
+        console.log(`FLAG (confirmed): ${name} (Healthy → Flag)`);
         const msg = formatFlagAlert(row);
         await sendToAll(msg, channelId, manager, dryRun);
         await logEvent(cid, 'flag_entered', prevStatus, currStatus, null, row.flag_triggers);
         alertCount++;
       }
 
-      // Recovery from Risk
+      // Recovery from Risk (confirmed)
       if (currStatus === 'Healthy' && prevStatus === 'Risk') {
-        console.log(`RECOVERY: ${name} (Risk → Healthy)`);
+        console.log(`RECOVERY (confirmed): ${name} (Risk → Healthy)`);
         const msg = formatRecoveryAlert(row, 'Risk');
         await sendToAll(msg, channelId, manager, dryRun);
         await logEvent(cid, 'risk_resolved', prevStatus, currStatus, null, null);
         alertCount++;
       }
 
-      // Recovery from Flag
+      // Recovery from Flag (confirmed)
       if (currStatus === 'Healthy' && prevStatus === 'Flag') {
-        console.log(`RECOVERY: ${name} (Flag → Healthy)`);
+        console.log(`RECOVERY (confirmed): ${name} (Flag → Healthy)`);
         const msg = formatRecoveryAlert(row, 'Flag');
         await sendToAll(msg, channelId, manager, dryRun);
         await logEvent(cid, 'flag_resolved', prevStatus, currStatus, null, null);
         alertCount++;
+      }
+
+      // ── Soft heads-up for pending status changes (once per pending direction) ──
+      if (confirmed && confirmed.pending_status && parseInt(confirmed.pending_streak) >= 1
+          && !sentPending.has(`${cid}_${confirmed.pending_status}`)) {
+        const isGettingWorse = confirmed.pending_status === 'Risk'
+          || (confirmed.pending_status === 'Flag' && currStatus === 'Healthy');
+        const statusCircle = confirmed.pending_status === 'Risk' ? ':red_circle:'
+          : confirmed.pending_status === 'Flag' ? ':large_yellow_circle:'
+          : ':large_green_circle:';
+        // Asymmetric thresholds for day count display
+        const needed = confirmed.pending_status === 'Risk' ? 1
+          : confirmed.pending_status === 'Flag' && currStatus === 'Healthy' ? 2
+          : confirmed.pending_status === 'Flag' && currStatus === 'Risk' ? 3
+          : confirmed.pending_status === 'Healthy' && currStatus === 'Risk' ? 5
+          : 3;
+        // Include the triggering metrics
+        const triggers = isGettingWorse
+          ? (row.risk_triggers && row.risk_triggers.length ? row.risk_triggers : row.flag_triggers || [])
+          : [];
+        const improvingMetrics = !isGettingWorse ? [] : [];
+        let metricsLine = '';
+        if (isGettingWorse && triggers.length > 0) {
+          metricsLine = triggers.join(' · ');
+        } else if (!isGettingWorse) {
+          // Show key positive stats for improving clients
+          const parts = [];
+          if (parseFloat(row.roas) > 0) parts.push(`ROAS ${parseFloat(row.roas).toFixed(1)}x`);
+          if (parseFloat(row.trailing_3mo_roas) > 0) parts.push(`3mo ROAS ${parseFloat(row.trailing_3mo_roas).toFixed(1)}x`);
+          if (parseFloat(row.guarantee) > 0) parts.push(`Guarantee ${parseFloat(row.guarantee).toFixed(1)}x`);
+          if (parseInt(row.quality_leads) > 0) parts.push(`${row.quality_leads} leads`);
+          if (parts.length) metricsLine = parts.join(' · ');
+        }
+        const dirLabel = isGettingWorse ? 'worsening' : 'improving';
+        const pendingMsg = `${statusCircle} *HEADS UP* — *${name}* trending toward ${confirmed.pending_status} (${dirLabel})${metricsLine ? '\n' + metricsLine.trim() : ''} (day 1/${needed})`;
+        console.log(`PENDING: ${name} → ${confirmed.pending_status} (day 1/${needed})`);
+        // Post to client channel only (keeps manager channels clean)
+        if (channelId && !dryRun) {
+          try { await postToSlack(channelId, pendingMsg); } catch (e) { console.error(`  Error posting to client channel: ${e.message}`); }
+        }
+        if (dryRun) console.log(`  [DRY RUN] Would post to client channel`);
+        await logEvent(cid, 'pending_heads_up', currStatus, confirmed.pending_status, null,
+          { pending_status: confirmed.pending_status, direction: dirLabel });
       }
 
       // ── Budget change ──
@@ -347,7 +417,7 @@ async function main() {
       }
     }
 
-    // ── Update last known state ──
+    // ── Update last known state (use confirmed status for next comparison) ──
     if (!dryRun) {
       await pool.query(`
         INSERT INTO alert_last_state (customer_id, status, risk_type, guarantee, quality_leads, budget, updated_at)
@@ -356,7 +426,7 @@ async function main() {
           status = EXCLUDED.status, risk_type = EXCLUDED.risk_type,
           guarantee = EXCLUDED.guarantee, quality_leads = EXCLUDED.quality_leads,
           budget = EXCLUDED.budget, updated_at = NOW()
-      `, [cid, row.status, row.risk_type, row.guarantee, row.actual_quality_leads, row.budget]);
+      `, [cid, currStatus, currRiskType, row.guarantee, row.actual_quality_leads, row.budget]);
     }
   }
 

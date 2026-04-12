@@ -302,7 +302,7 @@ def process_client_conversations(conn, customer_id_unused, client_name, api_key,
                 elif channel == "call":
                     stats["calls"] += 1
                     # Get call duration from meta
-                    call_duration = msg.get("meta", {}).get("call", {}).get("duration", 0)
+                    call_duration = msg.get("meta", {}).get("call", {}).get("duration") or 0
                     # Only fetch transcription for calls > 10 seconds (skip quick hangups)
                     if call_duration > 10:
                         try:

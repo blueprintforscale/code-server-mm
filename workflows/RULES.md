@@ -109,78 +109,131 @@ When Steps 1-4 fail to match an HCP customer to CallRail, attempt a name-based m
 
 ## 3. Job vs Inspection Classification
 
-**Applies to:** HCP jobs that need to be categorized as actual remediation work vs. initial inspections.
+**Applies to:** HCP jobs that need to be categorized as treatment work vs. inspection/testing work.
 
-**Function:** `classify_job_or_inspection(description, original_estimate_id, total_amount_cents)`
+**Function:** `classify_job()` in `~/projects/workflows/hcp-sync/classifier.py`
 
-**Priority order:**
+**Signal priority** (first rule to match wins; all rules evaluated in order):
 
-| Priority | Rule | Result |
-|----------|------|--------|
-| 0 | Description matches inspection-priority phrases: `pre-treatment`, `air quality test`, `air test`, `mold test`, `testing+estimate`, `visual assessment`, `complimentary estimate` **AND total < $1,000**. Large jobs (>=$1K) mentioning testing as a line item are not affected — Priority 1 treatment keywords take precedence. | **INSPECTION** |
-| 1 | Description matches job keywords: `remediation`, `dry fog`, `treatment`, `removal`, `abatement`, `encapsulation` | **JOB** |
-| 2 | Description matches inspection keywords (AND NOT job keywords): `assessment`, `inspection`, `test`, `evaluat`, `consult`, `survey`, `sample`, `estimate`, `sampling`, `walk-through`, `instascope`, `scan`, `moisture check`, `mold report`, `clearance`, `ermi` | **INSPECTION** |
-| 3 | `original_estimate_id` is filled (created from an approved estimate) | **JOB** |
-| 4a | No treatment keywords + `total_amount_cents < 100000` ($1,000) | **INSPECTION** |
-| 4b | Treatment keywords present + `total_amount_cents >= 10000` ($100) | **JOB** |
-| 4c | No treatment keywords + `total_amount_cents >= 100000` ($1,000) | **JOB** |
+| Priority | Signal | Result |
+|---|---|---|
+| 1 | `status IN ('user canceled', 'pro canceled', 'canceled')` | **canceled** (excluded from funnel) |
+| 2 | `parent_job_id IS NOT NULL` (segment inherits from parent) | inherit parent's `work_category` |
+| 3 | `hcp_jobs.job_type` (HCP custom field set by client) matches treatment/inspection keywords | client's pick wins |
+| 3b | **Linked estimate option** (the `est_xxx` ID the job was created from). The option's own tags/name/message is checked — top signal for clients like Pure Air Pros who use estimate-driven workflows. Became the #1 signal for Sy Elijah (1,171 / 4,059 jobs). | option's category |
+| 4 | Job `tags` contain a treatment tag (`Mold Treatment`, `Water Mitigation`, `Crawl Space`, `Encapsulation`, `Remediation`, `Retreatment`, `Warranty Mold Treatment`, `Containment`, `Demolition`, `Dehumidifier`) OR an inspection tag (`Inspection`, `Assessments & Testing`, `Assessment`, `Testing`, `Mold Test`, `Air Quality Test`) | first match wins |
+| 4a | Plumber-referral tag patterns: tag matches `^BDR[\s-]`, `^Plumber[\s-]`, `^PBR[\s-]?`, or contains `Plumber Warranty` (always water mitigation referrals) | **treatment** |
+| 4b | `Dehumidifier` tag alone (no other tag) with no clarifying description | **unknown** — VA review |
+| 5 | **Line items** (all of them, via  table populated from ) — per-item majority by $ with priority inspection phrases overriding treatment branding | first match wins |
+| 6 | Description keyword matching (after stripping HCP boilerplate like "Work Authorization - Anticipated Scope and Terms & Conditions"): priority phrases `pre-treatment\|air quality test\|mold test\|before & after mold test` on jobs <$1k → inspection; otherwise treatment keywords → treatment; otherwise inspection keywords → inspection | first match wins |
+| 7 | Linked full estimate (via csr_xxx, for future use) | — |
+| 8 | Amount floor: ≥$10k → treatment; $1k–$10k → treatment (mid-$ rescue); <$1k → inspection; $0 with no signals → **unknown** (VA review) | amount-based |
 
-**Treatment keywords for Priority 4:** `remediation`, `dry fog`, `treatment`, `removal`, `abatement`, `encapsulation`, `instapure`, `everpure`, `demolition`.
+**Treatment keywords:** `remediation`, `dry fog`, `treatment`, `removal`, `abatement`, `encapsulation`, `instapure`, `everpure`, `containment`, `demolition`, `demo`, `retreatment`, `water mitigation`, `mold remediation`, `mold treatment`, `crawl space encapsulation`, `crawlspace door`
 
-**job_type enhancement (added 2026-04-08):** When an HCP job has `job_fields.job_type.name` set (e.g., "Remediation Job", "Inspection/Sampling", "Treatment"), this value is appended to the description before keyword matching. This means a job described as "Complementary Assessment" with job_type "Remediation Job" will correctly match the "remediation" keyword and classify as a job. The job_type is also stored in `hcp_jobs.job_type` for reference. The API lead-spreadsheet query and the ETL both use this concatenated approach. An explicit override for job_type IN ("Remediation Job", "Redo/Warranty") is kept as a safety net in the API for types that don't contain standard treatment keywords. Clients using job_type: Chad Adams, Rob Brown (SoCal + SD), Daniel Clay, David Watts, Aaron Meadows, Ron Payne.
+**Inspection keywords:** `assessment`, `inspection`, `test`, `evaluat`, `consult`, `survey`, `sample`, `sampling`, `walk-through`, `instascope`, `scan`, `moisture check`, `mold report`, `clearance`, `ermi`, `visual assess`, `air quality`, `air test`
 
-**Rationale:** Ambiguous job descriptions (e.g., "Services") under $1K default to inspection. Jobs with explicit treatment keywords are trusted at $100+.
+**Priority inspection phrases** (override treatment branding on small-$ jobs): `pre-treatment`, `air quality test`, `air test`, `mold test`, `testing + estimate`, `visual assessment`, `complimentary estimate`, `before & after mold test`
 
-**Flags:** If classification used Priority 4 (amount fallback), the `classification_fallback` exception flag is set.
+**HCP boilerplate descriptions** (stripped as zero-signal): `Work Authorization - Anticipated Scope and Terms & Conditions`, `Work Authorization`, `Terms and Conditions`, `Terms & Conditions`, empty string.
 
-**Source file:** `hcp-sync/pull_hcp_data.py` (~line 95-125)
+**Stored on `hcp_jobs`:**
+- `work_category TEXT` — treatment | inspection | canceled | unknown
+- `review_needed BOOLEAN` — true for VA queue
+- `review_reason TEXT` — why classifier couldn't decide
+- `classifier_signal TEXT` — which rule fired (e.g., `linked_option`, `tags`, `amount_mid_default`)
+- `classified_at TIMESTAMPTZ`
+
+**Source files:**
+- `~/projects/workflows/hcp-sync/classifier.py` — `classify_job()`
+- `~/projects/workflows/hcp-sync/pull_hcp_data.py` — `upsert_job()` calls the classifier at ingest and looks up the linked option via `hcp_estimate_options.hcp_option_id = hcp_jobs.original_estimate_id`
 
 ---
 
 ## 4. Estimate Type Classification
 
-**Applies to:** HCP estimates, used to separate inspection estimates from treatment estimates.
+**Applies to:** HCP estimates, used to separate treatment estimates from inspection-only estimates.
 
-| Condition | Type |
-|-----------|------|
-| `highest_option_cents > 0 AND < 100000` ($1,000) | `inspection` |
-| `highest_option_cents >= 100000` ($1,000) | `treatment` |
-| `highest_option_cents = 0` | `unknown` |
+**Function:** `classify_estimate()` in `~/projects/workflows/hcp-sync/classifier.py`
 
-**Impact:** Estimate type determines which revenue bucket it feeds into (inspection vs treatment in ROAS calc).
+**Approach:** Per-option evaluation. An estimate often has multiple options (e.g., the original inspection tier plus an upgraded treatment tier). We evaluate each option independently:
+1. Skip "dirty" options (options that have an explicit inspection tag, priority inspection phrase in name, or inspection keyword without a treatment keyword)
+2. For any "clean" option, check for a treatment signal in this priority:
+   - Treatment tag on the option → treatment
+   - Plumber-referral tag pattern on the option → treatment
+   - Treatment keyword in non-boilerplate option name → treatment
+   - Treatment keyword in `message_from_pro` → treatment
+   - Option amount ≥ $1,000 → treatment (`option_amount_treatment`)
+3. If no option yielded a treatment signal, fall back to estimate-level inspection signals (first inspection tag found → inspection; first inspection phrase/keyword in a name → inspection)
+4. Linked job fallback: if any job created from this estimate has `work_category='treatment'` → treatment
+5. Top-level amount fallback (for estimates with no active options): use `highest_option_cents` on the estimate row itself, with the same ≥$10k / ≥$1k / <$1k tiers
 
-**Source file:** `hcp-sync/pull_hcp_data.py` (~line 370)
+**Boilerplate option names** (skipped in keyword matching): `Option #1`, `Option #2`, `Option #3`, `Copy of Option #1`, `Worksheet`, `Standard`.
+
+**Why per-option matters:** Clients often show an inspection quote AND a treatment quote in the same estimate. A first-option-wins classifier misclassifies these as inspection. The per-option approach correctly identifies the estimate as treatment if ANY clean option signals treatment — matching the real business intent ("was a treatment option offered?").
+
+**Stored on `hcp_estimates`:**
+- `work_category TEXT` — treatment | inspection | canceled | unknown
+- `review_needed` / `review_reason` / `classifier_signal` / `classified_at` — same shape as jobs
+- Legacy `estimate_type TEXT` is kept in sync (`v_estimate_groups` reads it, `mv_funnel_leads` joins via the group view)
+
+**Impact:** Estimate type determines which revenue bucket feeds ROAS (treatment vs inspection).
+
+**Source files:**
+- `~/projects/workflows/hcp-sync/classifier.py` — `classify_estimate()`
+- `~/projects/workflows/hcp-sync/pull_hcp_data.py` — `upsert_estimate()` builds option dicts and calls the classifier at ingest
 
 ---
 
 ## 5. Invoice Type Classification
 
-**Applies to:** HCP invoices, determines if revenue is inspection or treatment.
+**Applies to:** HCP invoices, determines if revenue is treatment or inspection.
 
-| Condition | Type |
-|-----------|------|
-| Invoice linked to inspection record | `inspection` |
-| Invoice linked to treatment/remediation job | `treatment` |
-| Amount < $1,000 (Jobber fallback) | inspection invoice |
-| Amount >= $1,000 (Jobber fallback) | treatment invoice |
+**Function:** `classify_invoice()` in `~/projects/workflows/hcp-sync/classifier.py`
 
-**Step 5 — Name match via GHL (HCP-only):**
+**Approach:** Line-item majority. Every invoice in `hcp_invoice_items` is summed into category buckets, and whichever has more $ wins.
 
-When Steps 1-4 fail to match an HCP customer to CallRail, attempt a name-based match using GHL contacts as a bridge:
+**Line item keyword rules:**
+- **Priority inspection phrases** (override treatment branding): `air quality test`, `mold test`, `tape test`, `tape sample`, `petri`, `swab`, `before & after mold test`. These win over treatment keywords because e.g. "Mold Remediation - Air Quality Test/ Tape Test Sample" is a test despite the "remediation" branding.
+- **Treatment keywords:** `remediation`, `treatment`, `removal`, `abatement`, `encapsulation`, `demolition`, `retreatment`, `dehumidifier`, `vapor barrier`, `insulation`, `dry fog`, `fog`, `instapure`, `everpure`, `install`, `containment`, `vaporshield`, `pure install`, `crawl space debris`, `janitorial`, `viper`
+- **Inspection keywords:** `inspection`, `assessment`, `evaluation`, `consultation`, `survey`, `sample`, `test`, `moisture check`, `mold report`, `clearance`, `ermi`, `visual`, `walk-through`, `instascope`
 
-1. Find a `ghl_contacts` record where `LOWER(TRIM(first_name))` and `LOWER(TRIM(last_name))` exactly match the HCP customer
-2. The GHL contact must have a different `phone_normalized` than the HCP customer (same phone would have matched in Step 1)
-3. The GHL contact's phone must match a CallRail `calls` record via `normalize_phone(caller_phone)`
-4. The CallRail call must be **within 3 days** of `hcp_created_at` (using `ABS(EXTRACT(EPOCH FROM hcp_created_at - start_time)) <= 3 * 86400`)
-5. The name must be **unique** within that customer account for the 3-day window — if multiple HCP customers or multiple GHL contacts share the same first+last name, skip the match (flag for manual review instead)
+**Fallback priority:**
+1. `status IN ('canceled', 'voided')` → canceled
+2. No line items in our DB → linked job's `work_category`
+3. No line items → amount floor (<$1k = inspection, ≥$1k = treatment, $0 = unknown)
+4. Sum line items by category → majority wins
+5. Tie → linked job category → amount floor
 
-**Why this exists:** Clients sometimes enter a lead in HCP with a different phone number than the one they called from (home vs. cell, typos). The GHL contact has the correct phone from CallRail but the HCP record doesn't. This bridges the gap using the name as a cross-reference.
+**Stored on `hcp_invoices`:**
+- `work_category TEXT` + `review_needed` / `review_reason` / `classifier_signal` / `classified_at`
+- Legacy `invoice_type TEXT` is kept in sync for existing consumers (mv_funnel_leads, review app, risk dashboard)
 
-**match_method:** `'name'` — distinguishes these from phone/email/webflow matches for auditing.
+**Impact:** Invoice type determines which bucket (`insp_invoice_cents` vs `treat_invoice_cents`) feeds `mv_funnel_leads` and therefore ROAS revenue.
+
+**Backfill impact:** 2,887 invoices reclassified vs the old heuristic (had a linked job → treatment, no linked job → inspection), primarily correcting no-linked-job invoices that actually have treatment line items.
 
 **Source files:**
-- HCP: `hcp-sync/pull_hcp_data.py`
-- Jobber: `risk-dashboard/fix_jobber_inspections.sql`
+- `~/projects/workflows/hcp-sync/classifier.py` — `classify_invoice()`
+- `~/projects/workflows/hcp-sync/pull_hcp_data.py` — `upsert_invoice()` builds line item dicts from the HCP API response and calls the classifier at ingest
+
+---
+
+## 5b. mv_funnel_leads Fallback Rules (added 2026-04-11)
+
+Since HCP job records are sometimes incomplete (e.g., Pure Air Pros bills treatment via estimate and leaves the job record at $0), `mv_funnel_leads` applies fallback signals:
+
+```
+has_job_scheduled = EXISTS(qualifying treatment job: work_category='treatment', amount ≥ $1k, valid status)
+                 OR EXISTS(approved treatment estimate ≥ $1k)
+
+has_job_completed = EXISTS(qualifying completed treatment job: work_category='treatment', status 'complete rated'/'complete unrated', amount ≥ $1k)
+                 OR EXISTS(treatment invoice > $0, invoice_type='treatment', status not canceled/voided)
+```
+
+This means a customer with an approved treatment estimate but no qualifying HCP job still counts as `job_scheduled`. Same for treatment invoices → `job_completed`. Catches the Pure Air Pros workflow where work is committed via estimate approval rather than a formal job record.
+
+**Source file:** `~/projects/workflows/views/mv_funnel_leads.sql`
 
 ---
 

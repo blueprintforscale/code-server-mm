@@ -20,21 +20,6 @@ const ALLOWED_ORIGINS = [
 const API_KEY = process.env.BLUEPRINTOS_API_KEY;
 const SALT_ROUNDS = 12;
 
-// Clamp a requested date_from to the client's start_date, so per-client dashboards
-// never show data from before the client onboarded (or, in Atlanta's case, before
-// the location was split off). Returns the clamped ISO date string (YYYY-MM-DD).
-// Group routes do NOT call this — combined views keep historical data intact.
-async function clampDateFrom(pool, customerId, dateFrom) {
-  const { rows } = await pool.query(
-    'SELECT start_date FROM clients WHERE customer_id = $1',
-    [customerId]
-  );
-  if (!rows[0] || !rows[0].start_date) return dateFrom;
-  const startIso = new Date(rows[0].start_date).toISOString().split('T')[0];
-  if (!dateFrom) return startIso;
-  return dateFrom < startIso ? startIso : dateFrom;
-}
-
 fastify.register(cors, {
   origin: ALLOWED_ORIGINS,
   methods: ['GET', 'POST', 'PUT', 'OPTIONS'],
@@ -163,8 +148,7 @@ fastify.get('/dashboard/risk', async (request) => {
 // Funnel counts by source
 fastify.get('/clients/:customerId/funnel', async (request) => {
   const { customerId } = request.params;
-  let { source = 'all', date_from, date_to } = request.query;
-  date_from = await clampDateFrom(pool, customerId, date_from);
+  const { source = 'all', date_from, date_to } = request.query;
 
   // Get client info
   const clientResult = await pool.query(
@@ -175,10 +159,8 @@ fastify.get('/clients/:customerId/funnel', async (request) => {
   const client = clientResult.rows[0];
 
   // Build client_ids CTE for parent+child
-  const cidCTE = `WITH RECURSIVE client_ids AS (
-    SELECT customer_id FROM clients WHERE customer_id = $1
-    UNION
-    SELECT c.customer_id FROM clients c JOIN client_ids ci ON c.parent_customer_id = ci.customer_id
+  const cidCTE = `WITH client_ids AS (
+    SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1
   )`;
 
   // Date params
@@ -202,256 +184,20 @@ fastify.get('/clients/:customerId/funnel', async (request) => {
     sourceWhere = `AND is_google_ads_call(c.source, c.source_name, c.gclid)`;
   } else if (source === 'gbp') {
     sourceWhere = `AND c.source = 'Google My Business' AND NOT is_google_ads_call(c.source, c.source_name, c.gclid)`;
-  } else if (source === 'lsa') {
-    sourceWhere = `AND c.source_name = 'LSA'`;
   }
 
-  // LSA source: use lsa_leads table directly for lead counts + HCP for funnel progress
-  let result;
-  if (source === 'lsa') {
-    result = await getLsaFunnel(pool, customerId, params, dateWhere, cidCTE);
-  } else if (client.spreadsheet_id) {
-    result = await getSpreadsheetFunnel(pool, customerId, params, dateWhere, sourceWhere, cidCTE);
-  } else if (client.field_management_software === 'housecall_pro') {
-    result = await getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, cidCTE, client.extra_spam_keywords);
+  // Spreadsheet clients: use spreadsheet_leads as primary, HCP as backup
+  if (client.spreadsheet_id) {
+    return await getSpreadsheetFunnel(pool, customerId, params, dateWhere, sourceWhere, cidCTE);
+  }
+  if (client.field_management_software === 'housecall_pro') {
+    return await getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, cidCTE, client.extra_spam_keywords);
   } else if (client.field_management_software === 'jobber') {
-    result = await getJobberFunnel(pool, customerId, params, dateWhere, sourceWhere, cidCTE);
+    return await getJobberFunnel(pool, customerId, params, dateWhere, sourceWhere, cidCTE);
   } else if (client.field_management_software === 'ghl') {
-    result = await getGhlFunnel(pool, customerId, params, dateWhere, sourceWhere, cidCTE);
-  } else {
-    return { error: 'Unknown field management software' };
+    return await getGhlFunnel(pool, customerId, params, dateWhere, sourceWhere, cidCTE);
   }
-  if (result.error) return result;
-
-  // ====================================================================
-  // CRITICAL: DO NOT RE-ENABLE THIS BLOCK. (Disabled 2026-04-08)
-  // getHcpFunnel is now the single source of truth for lead counts.
-  // get_dashboard_metrics() does NOT handle: bot detection, repeat caller
-  // filtering, attribution overrides, or reactivation protocol.
-  // Re-enabling this will cause funnel/drawer count mismatches.
-  // See: RULES.md Section 21 (bot detection), Section 22 (reactivation)
-  // ====================================================================
-  if (false && source === 'google_ads' && date_from && date_to) {
-    const { rows: metricsRows } = await pool.query(
-      `SELECT quality_leads, actual_quality_leads, ad_spend, cpl, total_closed_rev, total_open_est_rev, roas, all_time_rev, all_time_spend, guarantee, total_insp_booked FROM get_dashboard_metrics($1::date, $2::date) WHERE customer_id = $3`,
-      [date_from, date_to, customerId]
-    );
-    if (metricsRows.length > 0) {
-      const m = metricsRows[0];
-      const qualityLeads = parseInt(m.actual_quality_leads) || 0;
-      const allContacts = parseInt(m.quality_leads) || 0;  // pre-spam-filter count
-      // Override lead counts with risk dashboard's CallRail-deduped counts
-      result.leads = String(qualityLeads);
-      result.quality_leads = String(qualityLeads);
-      result.total_contacts = String(Math.max(allContacts, qualityLeads));
-      result.spam_count = String(Math.max(allContacts - qualityLeads, 0));
-      // Override financial metrics
-      result.ad_spend = String(parseFloat(m.ad_spend) || 0);
-      result.cpl = qualityLeads > 0
-        ? (parseFloat(m.ad_spend) / qualityLeads).toFixed(2)
-        : '0';
-      result.closed_rev = String(parseFloat(m.total_closed_rev) || 0);
-      result.open_est_rev = String(parseFloat(m.total_open_est_rev) || 0);
-      result.all_time_rev = String(parseFloat(m.all_time_rev) || 0);
-      result.all_time_spend = String(parseFloat(m.all_time_spend) || 0);
-      // Override inspection count
-      result.inspection_scheduled = String(parseInt(m.total_insp_booked) || 0);
-      // Override guarantee (all_time_rev / program_price)
-      result.guarantee = String(parseFloat(m.guarantee) || 0);
-    }
-  }
-
-  return result;
-});
-
-// ============================================================
-// Client Groups (multi-client rollup, e.g., Sy Elijah Pure Air = Atlanta + Raleigh)
-// ============================================================
-
-// List groups
-fastify.get('/groups', async () => {
-  const { rows } = await pool.query(`
-    SELECT g.group_id, g.name, g.slug, g.description, g.dashboard_token,
-           MIN(c.start_date) AS start_date,
-           array_agg(m.customer_id ORDER BY m.display_order) AS member_ids,
-           array_agg(c.name ORDER BY m.display_order) AS member_names
-    FROM client_groups g
-    LEFT JOIN client_group_members m USING (group_id)
-    LEFT JOIN clients c ON c.customer_id = m.customer_id
-    GROUP BY g.group_id, g.name, g.slug, g.description, g.dashboard_token
-    ORDER BY g.name
-  `);
-  return rows;
-});
-
-// Lookup a group by slug — returns member customer_ids and metadata
-async function lookupGroup(slug) {
-  const { rows } = await pool.query(`
-    SELECT g.group_id, g.name, g.slug, g.description, g.dashboard_token,
-           array_agg(m.customer_id ORDER BY m.display_order) AS member_ids
-    FROM client_groups g
-    LEFT JOIN client_group_members m USING (group_id)
-    WHERE g.slug = $1
-    GROUP BY g.group_id, g.name, g.slug, g.description, g.dashboard_token
-  `, [slug]);
-  return rows[0] || null;
-}
-
-// Group funnel — aggregates across all members
-fastify.get('/groups/:slug/funnel', async (request) => {
-  const { slug } = request.params;
-  const { source = 'all', date_from, date_to } = request.query;
-
-  const group = await lookupGroup(slug);
-  if (!group) return { error: 'Group not found' };
-  const memberIds = (group.member_ids || []).filter(Boolean);
-  if (memberIds.length === 0) return { error: 'Group has no members' };
-
-  // Verify all members are housecall_pro for now (only HCP groups supported)
-  const { rows: memberRows } = await pool.query(
-    `SELECT customer_id, field_management_software, extra_spam_keywords FROM clients WHERE customer_id = ANY($1::bigint[])`,
-    [memberIds]
-  );
-  const nonHcp = memberRows.filter(m => m.field_management_software !== 'housecall_pro');
-  if (nonHcp.length > 0) {
-    return { error: `Group members must all be housecall_pro for now. Non-HCP: ${nonHcp.map(m => m.customer_id).join(',')}` };
-  }
-  // Use the union of extra_spam_keywords across members
-  const extraSpamKeywords = memberRows
-    .map(m => m.extra_spam_keywords)
-    .filter(Boolean)
-    .join(',') || null;
-
-  // Build inlined client_ids CTE — safe because memberIds are validated bigints
-  const cidList = memberIds.map(id => `(${parseInt(id, 10)})`).join(',');
-  const cidCTE = `WITH client_ids AS (SELECT customer_id FROM (VALUES ${cidList}) AS v(customer_id))`;
-
-  // No $1 customerId placeholder — group route starts dateWhere at $1.
-  // (Inlined cidCTE means $1 is never referenced for customer_id, so we'd get PG error 42P18.)
-  const params = [];
-  let paramIdx = 1;
-  let dateWhere = '';
-  if (date_from) {
-    dateWhere += ` AND lead_date >= $${paramIdx}::date`;
-    params.push(date_from);
-    paramIdx++;
-  }
-  if (date_to) {
-    dateWhere += ` AND lead_date <= $${paramIdx}::date`;
-    params.push(date_to);
-    paramIdx++;
-  }
-
-  // Source filter (matches /clients/:customerId/funnel)
-  let sourceWhere = '';
-  if (source === 'google_ads') {
-    sourceWhere = `AND is_google_ads_call(c.source, c.source_name, c.gclid)`;
-  } else if (source === 'gbp') {
-    sourceWhere = `AND c.source = 'Google My Business' AND NOT is_google_ads_call(c.source, c.source_name, c.gclid)`;
-  } else if (source === 'lsa') {
-    sourceWhere = `AND c.source_name = 'LSA'`;
-  }
-
-  const result = await getHcpFunnel(
-    pool,
-    memberIds[0],          // representative customerId (used only for projected_closes default)
-    params,
-    dateWhere,
-    sourceWhere,
-    cidCTE,
-    extraSpamKeywords,
-    memberIds              // full array — used for projected_closes side query
-  );
-
-  result.group = {
-    group_id: group.group_id,
-    name: group.name,
-    slug: group.slug,
-    member_ids: memberIds,
-  };
-  return result;
-});
-
-// Group lead-spreadsheet — fans out to each member's /clients/:id/lead-spreadsheet
-// and merges + dedupes by phone. Keeps the first occurrence per phone (earlier
-// members win). Avoids duplicating the 400-line HCP drawer SQL.
-fastify.get('/groups/:slug/lead-spreadsheet', async (request) => {
-  const { slug } = request.params;
-  const { source = 'google_ads', date_from, date_to } = request.query;
-
-  const group = await lookupGroup(slug);
-  if (!group) return { error: 'Group not found' };
-  const memberIds = (group.member_ids || []).filter(Boolean);
-  if (memberIds.length === 0) return { error: 'Group has no members' };
-
-  const qs = new URLSearchParams({ source });
-  if (date_from) qs.set('date_from', date_from);
-  if (date_to) qs.set('date_to', date_to);
-
-  const perMember = await Promise.all(memberIds.map(async (memberId) => {
-    const res = await fastify.inject({
-      method: 'GET',
-      url: '/clients/' + memberId + '/lead-spreadsheet?' + qs.toString(),
-      headers: { 'x-api-key': API_KEY },
-    });
-    if (res.statusCode !== 200) return [];
-    try {
-      const body = JSON.parse(res.payload);
-      return Array.isArray(body) ? body : [];
-    } catch {
-      return [];
-    }
-  }));
-
-  // Concat + dedupe by phone (first occurrence wins)
-  const seen = new Set();
-  const merged = [];
-  for (const rows of perMember) {
-    for (const row of rows) {
-      if (!row.phone || seen.has(row.phone)) continue;
-      seen.add(row.phone);
-      merged.push(row);
-    }
-  }
-  // Sort by contact_date desc to match single-client ordering
-  merged.sort((a, b) => {
-    const ad = a.contact_date ? new Date(a.contact_date).getTime() : 0;
-    const bd = b.contact_date ? new Date(b.contact_date).getTime() : 0;
-    return bd - ad;
-  });
-  return merged;
-});
-
-// Group source-tabs — union of all members' tabs, deduped
-fastify.get('/groups/:slug/source-tabs', async (request) => {
-  const { slug } = request.params;
-  const group = await lookupGroup(slug);
-  if (!group) return [];
-  const memberIds = (group.member_ids || []).filter(Boolean);
-  if (memberIds.length === 0) return [];
-
-  // Merge source tabs from all members
-  const perMember = await Promise.all(memberIds.map(async (memberId) => {
-    const res = await fastify.inject({
-      method: 'GET',
-      url: '/clients/' + memberId + '/source-tabs',
-      headers: { 'x-api-key': API_KEY },
-    });
-    try { return JSON.parse(res.payload); } catch { return []; }
-  }));
-
-  // Dedupe by key, prefer non-coming_soon version
-  const byKey = {};
-  for (const tabs of perMember) {
-    for (const tab of (tabs || [])) {
-      if (!byKey[tab.key] || (byKey[tab.key].coming_soon && !tab.coming_soon)) {
-        byKey[tab.key] = tab;
-      }
-    }
-  }
-  // Preserve ordering: all, google_ads, gbp, lsa, direct, referral
-  const order = ['all', 'google_ads', 'gbp', 'lsa', 'direct', 'referral'];
-  return order.filter(k => byKey[k]).map(k => byKey[k]);
+  return { error: 'Unknown field management software' };
 });
 
 // HCP funnel helper — matches portal dashboard logic exactly
@@ -501,19 +247,17 @@ async function getSpreadsheetFunnel(pool, customerId, params, dateWhere, sourceW
       FROM spreadsheet_leads sl
       WHERE sl.customer_id = $1 AND sl.is_quality_lead AND sl.source ILIKE '%google ads%'
     ),
-    -- All-time ad spend (exclude LSA)
+    -- All-time ad spend
     all_time_spend AS (
       SELECT COALESCE(SUM(cost), 0) as total
-      FROM campaign_daily_metrics
+      FROM account_daily_metrics
       WHERE customer_id IN (SELECT customer_id FROM client_ids)
-        AND campaign_type != 'LOCAL_SERVICES'
     ),
-    -- Period ad spend (exclude LSA)
+    -- Period ad spend
     period_spend AS (
       SELECT COALESCE(SUM(cost), 0) as ad_spend
-      FROM campaign_daily_metrics adm
+      FROM account_daily_metrics adm
       WHERE adm.customer_id IN (SELECT customer_id FROM client_ids)
-        AND adm.campaign_type != 'LOCAL_SERVICES'
         ${dateWhere.replace(/lead_date/g, 'adm.date')}
     ),
     -- Program fee
@@ -568,144 +312,15 @@ async function getSpreadsheetFunnel(pool, customerId, params, dateWhere, sourceW
 
   return result;
 }
-
-// LSA funnel: uses lsa_leads table for lead counts, HCP data for funnel progress
-async function getLsaFunnel(pool, customerId, params, dateWhere, cidCTE) {
-  const lsaDateWhere = dateWhere.replace(/lead_date/g, 'l.lead_creation_time::date');
-  const hcpDateWhere = dateWhere.replace(/lead_date/g, 'hc.hcp_created_at::date');
-
-  const { rows } = await pool.query(`
-    ${cidCTE},
-    -- All LSA leads for the period
-    lsa_all AS (
-      SELECT l.id, l.contact_phone_normalized as phone, l.lead_type, l.lead_charged,
-        l.hcp_customer_id, l.lead_creation_time
-      FROM lsa_leads l
-      WHERE l.customer_id = $1
-        ${lsaDateWhere}
-    ),
-    -- LSA leads with HCP match (for funnel progress)
-    lsa_matched AS (
-      SELECT DISTINCT ON (la.phone) la.phone, la.hcp_customer_id,
-        pg.all_ids
-      FROM lsa_all la
-      JOIN hcp_customers hc ON hc.hcp_customer_id = la.hcp_customer_id
-      JOIN (SELECT customer_id, phone_normalized, array_agg(hcp_customer_id) as all_ids
-            FROM hcp_customers WHERE customer_id = $1 GROUP BY customer_id, phone_normalized) pg
-        ON pg.phone_normalized = hc.phone_normalized AND pg.customer_id = hc.customer_id
-      WHERE la.hcp_customer_id IS NOT NULL AND la.phone IS NOT NULL
-      ORDER BY la.phone, la.lead_creation_time ASC
-    ),
-    -- Funnel counts from HCP data for matched LSA leads
-    funnel AS (
-      SELECT
-        COUNT(*) as matched_leads,
-        COUNT(*) FILTER (WHERE EXISTS (
-          SELECT 1 FROM hcp_inspections i WHERE i.hcp_customer_id = ANY(lm.all_ids)
-            AND i.record_status = 'active'
-            AND (i.status IN ('scheduled','complete rated','complete unrated','in progress') OR i.scheduled_at IS NOT NULL OR i.inferred_complete = true)
-        )) as inspection_scheduled,
-        COUNT(*) FILTER (WHERE EXISTS (
-          SELECT 1 FROM hcp_inspections i WHERE i.hcp_customer_id = ANY(lm.all_ids)
-            AND i.record_status = 'active'
-            AND (i.status IN ('complete rated','complete unrated') OR i.inferred_complete = true)
-        )) as inspection_completed,
-        COUNT(*) FILTER (WHERE EXISTS (
-          SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(lm.all_ids)
-            AND eg.status IN ('sent','approved','declined') AND eg.count_revenue AND eg.estimate_type = 'treatment'
-        )) as estimate_sent,
-        COUNT(*) FILTER (WHERE EXISTS (
-          SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(lm.all_ids)
-            AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND eg.approved_total_cents >= 100000
-        )) as estimate_approved,
-        COUNT(*) FILTER (WHERE EXISTS (
-          SELECT 1 FROM hcp_jobs j WHERE j.hcp_customer_id = ANY(lm.all_ids)
-            AND j.record_status = 'active' AND j.status IN ('scheduled','complete rated','complete unrated','in progress') AND j.total_amount_cents >= 100000
-        )) as job_scheduled,
-        COUNT(*) FILTER (WHERE EXISTS (
-          SELECT 1 FROM hcp_jobs j WHERE j.hcp_customer_id = ANY(lm.all_ids)
-            AND j.record_status = 'active' AND j.status IN ('complete rated','complete unrated') AND j.total_amount_cents >= 100000
-        )) as job_completed,
-        COUNT(*) FILTER (WHERE EXISTS (
-          SELECT 1 FROM hcp_invoices inv WHERE inv.hcp_customer_id = ANY(lm.all_ids)
-            AND inv.status NOT IN ('canceled','voided') AND inv.amount_cents > 0
-        ) OR EXISTS (
-          SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(lm.all_ids)
-            AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND eg.approved_total_cents >= 100000
-        )) as revenue_closed,
-        COALESCE(SUM(
-          COALESCE((SELECT SUM(inv.amount_cents) FROM hcp_invoices inv WHERE inv.hcp_customer_id = ANY(lm.all_ids)
-            AND inv.status NOT IN ('canceled','voided') AND inv.invoice_type = 'treatment'), 0)
-          + COALESCE((SELECT SUM(inv.amount_cents) FROM hcp_invoices inv WHERE inv.hcp_customer_id = ANY(lm.all_ids)
-            AND inv.status NOT IN ('canceled','voided') AND inv.invoice_type = 'inspection'), 0)
-        ), 0) / 100.0 as closed_rev,
-        COALESCE(SUM(
-          COALESCE((SELECT SUM(eg.highest_option_cents) FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(lm.all_ids)
-            AND eg.status IN ('sent','approved','declined') AND eg.count_revenue AND eg.estimate_type = 'treatment'), 0)
-        ), 0) / 100.0 as estimate_sent_value,
-        COALESCE(SUM(
-          COALESCE((SELECT SUM(eg.approved_total_cents) FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(lm.all_ids)
-            AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND eg.approved_total_cents >= 100000), 0)
-        ), 0) / 100.0 as estimate_approved_value
-      FROM lsa_matched lm
-    ),
-    -- LSA ad spend
-    lsa_spend AS (
-      SELECT COALESCE(SUM(cost), 0) as ad_spend
-      FROM campaign_daily_metrics adm
-      WHERE adm.customer_id IN (SELECT customer_id FROM client_ids)
-        AND adm.campaign_type = 'LOCAL_SERVICES'
-        ${dateWhere.replace(/lead_date/g, 'adm.date')}
-    )
-    SELECT
-      (SELECT COUNT(DISTINCT COALESCE(phone, 'nophone_' || id::text)) FROM lsa_all) as quality_leads,
-      (SELECT COUNT(DISTINCT COALESCE(phone, 'nophone_' || id::text)) FROM lsa_all) as total_contacts,
-      (SELECT COUNT(DISTINCT COALESCE(phone, 'nophone_' || id::text)) FROM lsa_all) as leads,
-      0 as spam_count,
-      f.matched_leads,
-      f.inspection_scheduled,
-      f.inspection_completed,
-      f.estimate_sent,
-      f.estimate_approved,
-      f.job_scheduled,
-      f.job_completed,
-      f.revenue_closed,
-      0 as open_estimate_count,
-      f.estimate_sent_value,
-      f.estimate_approved_value,
-      0 as job_value,
-      (SELECT ad_spend FROM lsa_spend) as ad_spend,
-      f.closed_rev,
-      0 as open_est_rev,
-      0 as all_time_spend,
-      0 as all_time_rev,
-      0 as program_price,
-      0 as months_in_program,
-      0 as projected_close_total
-    FROM funnel f
-  `, params);
-
-  return rows[0] || {};
-}
-
 // Fast HCP funnel using mv_funnel_leads materialized view
 // Quality lead logic aligned with risk dashboard: 20% abandoned rule, CRM activity rescue, unmatched spam filtering
-async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, cidCTE, extraSpamKeywords = null, customerIds = null) {
-  // customerIds (array): full set for client_ids — defaults to [customerId] for single-client routes.
-  // Group routes pass the full member list. The main SQL uses `client_ids` (built in cidCTE) so any
-  // place that filters by customer_id covers the whole set; only side queries (projected_closes) need
-  // the JS-side array.
-  customerIds = customerIds || [customerId];
-
+async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, cidCTE, extraSpamKeywords = null) {
   // Map source filter to mv_funnel_leads.lead_source
-  // NOTE: GBP check must come before GA because GBP filter also contains 'is_google_ads_call' (in NOT)
   let mvSourceWhere = '';
-  if (sourceWhere.includes('Google My Business')) {
-    mvSourceWhere = `AND fl.lead_source = 'gbp'`;
-  } else if (sourceWhere.includes("source_name = 'LSA'")) {
-    mvSourceWhere = `AND fl.lead_source = 'lsa'`;
-  } else if (sourceWhere.includes('is_google_ads_call')) {
+  if (sourceWhere.includes('is_google_ads_call')) {
     mvSourceWhere = `AND fl.lead_source = 'google_ads'`;
+  } else if (sourceWhere.includes('Google My Business')) {
+    mvSourceWhere = `AND fl.lead_source = 'gbp'`;
   }
 
   const mvDateWhere = dateWhere.replace(/lead_date/g, 'fl.hcp_created_at::date');
@@ -713,29 +328,18 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
   const fmDateWhere = dateWhere.replace(/lead_date/g, 'f2.submitted_at::date');
 
   // Source filters for unmatched calls/forms
-  // NOTE: GBP check must come before GA because GBP filter also contains 'is_google_ads_call' (in NOT)
   let crSourceWhere = '';
   let fmSourceWhere = '';
-  if (sourceWhere.includes('Google My Business')) {
-    crSourceWhere = `AND c2.source = 'Google My Business' AND NOT is_google_ads_call(c2.source, c2.source_name, c2.gclid)`;
-    fmSourceWhere = `AND f2.source = 'Google My Business' AND f2.gclid IS NULL`;
-  } else if (sourceWhere.includes("source_name = 'LSA'")) {
-    crSourceWhere = `AND c2.source_name = 'LSA'`;
-    fmSourceWhere = `AND 1=0`; // LSA doesn't have form submissions
-  } else if (sourceWhere.includes('is_google_ads_call')) {
+  if (sourceWhere.includes('is_google_ads_call')) {
     crSourceWhere = `AND is_google_ads_call(c2.source, c2.source_name, c2.gclid)`;
     fmSourceWhere = `AND (f2.gclid IS NOT NULL OR f2.source = 'Google Ads')`;
+  } else if (sourceWhere.includes('Google My Business')) {
+    crSourceWhere = `AND c2.source = 'Google My Business' AND NOT is_google_ads_call(c2.source, c2.source_name, c2.gclid)`;
+    fmSourceWhere = `AND f2.source = 'Google My Business' AND f2.gclid IS NULL`;
   }
 
   // Should abandoned always be excluded? (extra_spam_keywords includes 'abandoned')
   const abandonedAlwaysExclude = extraSpamKeywords && extraSpamKeywords.includes('abandoned');
-
-  // Ad spend campaign type filter: LSA shows LSA spend, GBP shows $0 (organic), others exclude LSA
-  const spendTypeWhere = sourceWhere.includes("source_name = 'LSA'")
-    ? `AND adm.campaign_type = 'LOCAL_SERVICES'`
-    : sourceWhere.includes("Google My Business")
-    ? `AND 1=0`
-    : `AND adm.campaign_type != 'LOCAL_SERVICES'`;
 
   // CRM activity rescue expression (reused in multiple places)
   const crmRescue = `(fl.has_inspection_scheduled OR fl.has_estimate_sent OR fl.has_job_scheduled OR fl.has_invoice)`;
@@ -751,7 +355,7 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
           ELSE 0
         END AS rate
       FROM mv_funnel_leads fl
-      WHERE fl.customer_id IN (SELECT customer_id FROM client_ids)
+      WHERE fl.customer_id = $1
         ${mvSourceWhere}
         ${mvDateWhere}
     ),
@@ -759,7 +363,7 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
     matched AS (
       SELECT fl.*
       FROM mv_funnel_leads fl
-      WHERE fl.customer_id IN (SELECT customer_id FROM client_ids)
+      WHERE fl.customer_id = $1
         ${mvSourceWhere}
         ${mvDateWhere}
         -- Core spam exclusion (with CRM activity rescue)
@@ -784,16 +388,13 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
         COALESCE(SUM(est_approved_cents) FILTER (WHERE has_estimate_approved), 0) / 100.0 as estimate_approved_value,
         COALESCE(SUM(job_cents) FILTER (WHERE has_job_scheduled), 0) / 100.0 as job_value,
         COALESCE(SUM(
-          CASE WHEN NOT COALESCE(exclude_from_ga_roas, false) THEN
-            CASE
-              WHEN treat_invoice_cents > 0 OR est_approved_cents > 0
-                THEN insp_invoice_cents + GREATEST(treat_invoice_cents, est_approved_cents)
-              ELSE job_cents + insp_invoice_cents
-            END
-          ELSE 0 END
+          CASE
+            WHEN treat_invoice_cents > 0 OR est_approved_cents > 0
+              THEN insp_invoice_cents + GREATEST(treat_invoice_cents, est_approved_cents)
+            ELSE job_cents + insp_invoice_cents
+          END
         ), 0) / 100.0 as closed_rev,
         COALESCE(SUM(CASE WHEN has_estimate_sent AND NOT has_estimate_approved AND NOT has_invoice
-            AND NOT COALESCE(exclude_from_ga_roas, false)
           THEN est_sent_cents ELSE 0 END), 0) / 100.0 as open_est_rev
       FROM matched
     ),
@@ -828,35 +429,11 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
       WHERE c2.customer_id IN (SELECT customer_id FROM client_ids)
         ${crDateWhere} ${crSourceWhere}
         AND normalize_phone(c2.caller_phone) IS NOT NULL
-        AND NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl WHERE fl.customer_id IN (SELECT customer_id FROM client_ids) AND fl.phone_normalized = normalize_phone(c2.caller_phone))
+        AND NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl WHERE fl.customer_id = $1 AND fl.phone_normalized = normalize_phone(c2.caller_phone))
         -- Exclude core spam phones
         AND NOT EXISTS (SELECT 1 FROM ghl_spam_phones sp WHERE sp.phone = normalize_phone(c2.caller_phone))
         -- Exclude abandoned-as-spam phones (only populated when rate > 20%)
         AND NOT EXISTS (SELECT 1 FROM ghl_abandoned_phones ap WHERE ap.phone = normalize_phone(c2.caller_phone))
-        -- 60-day repeat caller filter: exclude returning callers who aren't reactivated
-        AND (
-          c2.first_call = true
-          OR NOT EXISTS (SELECT 1 FROM calls c_prior
-            WHERE c_prior.customer_id = c2.customer_id
-              AND normalize_phone(c_prior.caller_phone) = normalize_phone(c2.caller_phone)
-              AND c_prior.start_time < c2.start_time)
-          OR (
-            -- Has prior call: apply 60-day combo rule
-            -- Keep if: gap >= 60 days AND no prior treatment
-            EXTRACT(EPOCH FROM (c2.start_time - (
-              SELECT MAX(c_prior2.start_time) FROM calls c_prior2
-              WHERE c_prior2.customer_id = c2.customer_id
-                AND normalize_phone(c_prior2.caller_phone) = normalize_phone(c2.caller_phone)
-                AND c_prior2.start_time < c2.start_time
-            ))) / 86400 >= 60
-            AND NOT EXISTS (
-              SELECT 1 FROM mv_funnel_leads fl2
-              WHERE fl2.customer_id = c2.customer_id
-                AND fl2.phone_normalized = normalize_phone(c2.caller_phone)
-                AND (fl2.has_job_completed OR fl2.has_invoice)
-            )
-          )
-        )
     ),
     unmatched_forms AS (
       SELECT DISTINCT normalize_phone(f2.customer_phone) as phone
@@ -864,43 +441,12 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
       WHERE f2.customer_id IN (SELECT customer_id FROM client_ids)
         ${fmDateWhere} ${fmSourceWhere}
         AND normalize_phone(f2.customer_phone) IS NOT NULL
-        AND NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl WHERE fl.customer_id IN (SELECT customer_id FROM client_ids) AND fl.phone_normalized = normalize_phone(f2.customer_phone))
+        AND NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl WHERE fl.customer_id = $1 AND fl.phone_normalized = normalize_phone(f2.customer_phone))
         AND NOT EXISTS (SELECT 1 FROM unmatched_calls uc WHERE uc.phone = normalize_phone(f2.customer_phone))
         -- Exclude core spam phones
         AND NOT EXISTS (SELECT 1 FROM ghl_spam_phones sp WHERE sp.phone = normalize_phone(f2.customer_phone))
         -- Exclude abandoned-as-spam phones (only populated when rate > 20%)
         AND NOT EXISTS (SELECT 1 FROM ghl_abandoned_phones ap WHERE ap.phone = normalize_phone(f2.customer_phone))
-        -- Exclude bot form spam: Direct source shortcut OR vowel ratio check
-        -- Two-word: 8+ chars per word + (source=Direct OR low vowels)
-        -- Single-word: 12+ chars + source=Direct (zero false positives in 90-day data)
-        AND NOT (
-          (f2.customer_name ~ '^[A-Z]{8,}\\s+[A-Z]{8,}$'
-            AND (f2.source = 'Direct'
-              OR LENGTH(REGEXP_REPLACE(UPPER(f2.customer_name), '[^AEIOU]', '', 'g'))::float
-                  / NULLIF(LENGTH(REGEXP_REPLACE(f2.customer_name, '\\s', '', 'g')), 0) < 0.25))
-          OR (f2.customer_name ~ '^[A-Z]{12,}$' AND f2.source = 'Direct')
-        )
-        -- 60-day repeat form filter
-        AND (
-          NOT EXISTS (SELECT 1 FROM calls c_prior
-            WHERE c_prior.customer_id IN (SELECT customer_id FROM client_ids)
-              AND normalize_phone(c_prior.caller_phone) = normalize_phone(f2.customer_phone)
-              AND c_prior.start_time < f2.submitted_at)
-          OR (
-            EXTRACT(EPOCH FROM (f2.submitted_at - (
-              SELECT MAX(c_prior2.start_time) FROM calls c_prior2
-              WHERE c_prior2.customer_id IN (SELECT customer_id FROM client_ids)
-                AND normalize_phone(c_prior2.caller_phone) = normalize_phone(f2.customer_phone)
-                AND c_prior2.start_time < f2.submitted_at
-            ))) / 86400 >= 60
-            AND NOT EXISTS (
-              SELECT 1 FROM mv_funnel_leads fl2
-              WHERE fl2.customer_id IN (SELECT customer_id FROM client_ids)
-                AND fl2.phone_normalized = normalize_phone(f2.customer_phone)
-                AND (fl2.has_job_completed OR fl2.has_invoice)
-            )
-          )
-        )
     ),
     unmatched_count AS (
       SELECT (SELECT COUNT(*) FROM unmatched_calls) + (SELECT COUNT(*) FROM unmatched_forms) as count
@@ -913,7 +459,7 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
         WHERE c3.customer_id IN (SELECT customer_id FROM client_ids)
           ${crDateWhere.replace(/c2\./g, 'c3.')} ${crSourceWhere.replace(/c2\./g, 'c3.')}
           AND normalize_phone(c3.caller_phone) IS NOT NULL
-          AND NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl WHERE fl.customer_id IN (SELECT customer_id FROM client_ids) AND fl.phone_normalized = normalize_phone(c3.caller_phone))
+          AND NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl WHERE fl.customer_id = $1 AND fl.phone_normalized = normalize_phone(c3.caller_phone))
           AND (EXISTS (SELECT 1 FROM ghl_spam_phones sp WHERE sp.phone = normalize_phone(c3.caller_phone))
                OR EXISTS (SELECT 1 FROM ghl_abandoned_phones ap WHERE ap.phone = normalize_phone(c3.caller_phone)))
         UNION
@@ -922,7 +468,7 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
         WHERE f3.customer_id IN (SELECT customer_id FROM client_ids)
           ${fmDateWhere.replace(/f2\./g, 'f3.')} ${fmSourceWhere.replace(/f2\./g, 'f3.')}
           AND normalize_phone(f3.customer_phone) IS NOT NULL
-          AND NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl WHERE fl.customer_id IN (SELECT customer_id FROM client_ids) AND fl.phone_normalized = normalize_phone(f3.customer_phone))
+          AND NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl WHERE fl.customer_id = $1 AND fl.phone_normalized = normalize_phone(f3.customer_phone))
           AND NOT EXISTS (SELECT 1 FROM unmatched_calls uc WHERE uc.phone = normalize_phone(f3.customer_phone))
           AND (EXISTS (SELECT 1 FROM ghl_spam_phones sp WHERE sp.phone = normalize_phone(f3.customer_phone))
                OR EXISTS (SELECT 1 FROM ghl_abandoned_phones ap WHERE ap.phone = normalize_phone(f3.customer_phone)))
@@ -932,7 +478,7 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
     spam_excluded AS (
       SELECT COUNT(*) as total
       FROM mv_funnel_leads fl
-      WHERE fl.customer_id IN (SELECT customer_id FROM client_ids) ${mvSourceWhere} ${mvDateWhere}
+      WHERE fl.customer_id = $1 ${mvSourceWhere} ${mvDateWhere}
         AND (
           COALESCE(fl.client_flag_reason,'') IN ('spam','out_of_area','wrong_service')
           OR (fl.ghl_spam AND NOT ${crmRescue})
@@ -940,47 +486,40 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
               AND ${abandonedAlwaysExclude ? 'true' : '(SELECT rate FROM abandoned_rate) > 0.20'})
         )
     ),
-    -- Ad spend (filtered by source: LSA tab shows LSA spend, others exclude LSA)
+    -- Ad spend
     period_spend AS (
       SELECT COALESCE(SUM(cost), 0) as ad_spend
-      FROM campaign_daily_metrics adm
+      FROM account_daily_metrics adm
       WHERE adm.customer_id IN (SELECT customer_id FROM client_ids)
-        ${spendTypeWhere}
         ${dateWhere.replace(/lead_date/g, 'adm.date')}
     ),
     -- Guarantee end date (start_date + 12 months)
-    -- For groups: uses the EARLIEST member's start_date as the anchor
     guarantee_period AS (
-      SELECT MIN(start_date) AS start_date,
-        MIN(start_date) + INTERVAL '12 months' AS end_date,
-        EXTRACT(MONTH FROM age(CURRENT_DATE, MIN(start_date)))::int
-          + EXTRACT(YEAR FROM age(CURRENT_DATE, MIN(start_date)))::int * 12 AS months_in
-      FROM clients WHERE customer_id IN (SELECT customer_id FROM client_ids)
+      SELECT start_date, start_date + INTERVAL '12 months' AS end_date,
+        EXTRACT(MONTH FROM age(CURRENT_DATE, start_date))::int + EXTRACT(YEAR FROM age(CURRENT_DATE, start_date))::int * 12 AS months_in
+      FROM clients WHERE customer_id = $1
     ),
     -- Revenue for guarantee: capped at first 12 months from start_date
     all_time_rev AS (
       SELECT COALESCE(SUM(
-        CASE WHEN NOT COALESCE(fl.exclude_from_ga_roas, false) THEN
-          CASE
-            WHEN fl.treat_invoice_cents > 0 OR fl.est_approved_cents > 0
-              THEN fl.insp_invoice_cents + GREATEST(fl.treat_invoice_cents, fl.est_approved_cents)
-            ELSE fl.job_cents + fl.insp_invoice_cents
-          END
-        ELSE 0 END
+        CASE
+          WHEN fl.treat_invoice_cents > 0 OR fl.est_approved_cents > 0
+            THEN fl.insp_invoice_cents + GREATEST(fl.treat_invoice_cents, fl.est_approved_cents)
+          ELSE fl.job_cents + fl.insp_invoice_cents
+        END
       ), 0) / 100.0 as total
       FROM mv_funnel_leads fl
-      WHERE fl.customer_id IN (SELECT customer_id FROM client_ids) AND fl.lead_source = 'google_ads'
+      WHERE fl.customer_id = $1 AND fl.lead_source = 'google_ads'
         AND NOT (fl.ghl_spam AND NOT ${crmRescue})
         AND COALESCE(fl.client_flag_reason,'') NOT IN ('spam','out_of_area','wrong_service')
         AND fl.has_invoice
         AND fl.hcp_created_at < (SELECT end_date FROM guarantee_period)
     ),
-    -- Ad spend for guarantee: capped at first 12 months from start_date (exclude LSA)
+    -- Ad spend for guarantee: capped at first 12 months from start_date
     all_time_spend AS (
       SELECT COALESCE(SUM(cost), 0) as total
-      FROM campaign_daily_metrics
+      FROM account_daily_metrics
       WHERE customer_id IN (SELECT customer_id FROM client_ids)
-        AND campaign_type != 'LOCAL_SERVICES'
         AND date < (SELECT end_date FROM guarantee_period)::date
     ),
     program_fee AS (
@@ -1010,21 +549,15 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
       (SELECT total FROM all_time_rev) as all_time_rev,
       (SELECT total FROM program_fee) as program_price,
       (SELECT months_in FROM guarantee_period) as months_in_program
-      ,(SELECT array_agg(phone) FROM (
-        SELECT DISTINCT phone_normalized as phone FROM matched
-        UNION SELECT phone FROM unmatched_calls
-        UNION SELECT phone FROM unmatched_forms
-      ) qp) as quality_phones
     FROM matched_agg ma
   `, params);
 
   const result = rows[0] || {};
-  // DEBUG: log funnel results for troubleshooting
 
-  // Add projected close total (sums across all members for groups)
+  // Add projected close total
   const { rows: projRows } = await pool.query(
-    `SELECT COALESCE(SUM(projected_revenue_cents), 0) / 100.0 as total FROM projected_closes WHERE customer_id = ANY($1::bigint[])`,
-    [customerIds]
+    `SELECT COALESCE(SUM(projected_revenue_cents), 0) / 100.0 as total FROM projected_closes WHERE customer_id = $1`,
+    [customerId]
   );
   result.projected_close_total = parseFloat(projRows[0]?.total) || 0;
 
@@ -1047,7 +580,7 @@ async function getJobberFunnel(pool, customerId, params, dateWhere, sourceWhere,
         AND is_google_ads_call(ca.source, ca.source_name, ca.gclid))
       OR EXISTS (SELECT 1 FROM form_submissions fs WHERE fs.customer_id IN (SELECT customer_id FROM client_ids)
         AND (fs.callrail_id = jc.callrail_id OR fs.phone_normalized = jc.phone_normalized)
-        AND fs.gclid IS NOT NULL AND fs.gclid != '')
+        AND (fs.gclid IS NOT NULL OR fs.source = 'Google Ads'))
       OR EXISTS (SELECT 1 FROM ghl_contacts gc WHERE gc.customer_id = jc.customer_id
         AND (gc.phone_normalized = jc.phone_normalized OR (jc.email IS NOT NULL AND jc.email != '' AND LOWER(gc.email) = LOWER(jc.email)))
         AND gc.gclid IS NOT NULL AND gc.gclid != '')
@@ -1089,73 +622,6 @@ async function getJobberFunnel(pool, customerId, params, dateWhere, sourceWhere,
       SELECT
         jc.jobber_customer_id,
         jc.phone_normalized,
-        jc.email,
-        jc.jobber_created_at,
-        -- First GA touch time
-        LEAST(
-          (SELECT MIN(c.start_time) FROM calls c
-           WHERE (c.callrail_id = jc.callrail_id OR (c.customer_id = jc.customer_id AND normalize_phone(c.caller_phone) = jc.phone_normalized))
-             AND (c.source IN ('Google Ads','Google Ads 2') OR c.gclid IS NOT NULL OR c.classified_source = 'google_ads'
-                  OR EXISTS (SELECT 1 FROM callrail_trackers ct WHERE ct.tracker_id = c.tracker_id AND ct.source_type = 'google_ad_extension'))),
-          (SELECT MIN(f.submitted_at) FROM form_submissions f
-           WHERE f.customer_id = jc.customer_id
-             AND (f.callrail_id = jc.callrail_id OR normalize_phone(f.customer_phone) = jc.phone_normalized
-                  OR (jc.email IS NOT NULL AND jc.email <> '' AND lower(f.customer_email) = lower(jc.email)))
-             AND (f.gclid IS NOT NULL OR f.source = 'Google Ads')),
-          (SELECT MIN(COALESCE(gc.kpi_date_created, gc.date_added)) FROM ghl_contacts gc
-           WHERE gc.customer_id = jc.customer_id
-             AND (gc.phone_normalized = jc.phone_normalized
-                  OR (jc.email IS NOT NULL AND jc.email <> '' AND lower(gc.email) = lower(jc.email)))
-             AND gc.gclid IS NOT NULL AND gc.gclid <> '')
-        ) as first_ga_touch_time,
-        -- Reactivation: exclude if recent activity (<60d) or had prior treatment
-        CASE WHEN jc.jobber_created_at < LEAST(
-            COALESCE((SELECT MIN(c.start_time) FROM calls c
-             WHERE (c.callrail_id = jc.callrail_id OR (c.customer_id = jc.customer_id AND normalize_phone(c.caller_phone) = jc.phone_normalized))
-               AND (c.source IN ('Google Ads','Google Ads 2') OR c.gclid IS NOT NULL OR c.classified_source = 'google_ads'
-                    OR EXISTS (SELECT 1 FROM callrail_trackers ct WHERE ct.tracker_id = c.tracker_id AND ct.source_type = 'google_ad_extension'))),
-            '9999-12-31'::timestamptz),
-            COALESCE((SELECT MIN(f.submitted_at) FROM form_submissions f
-             WHERE f.customer_id = jc.customer_id
-               AND (f.callrail_id = jc.callrail_id OR normalize_phone(f.customer_phone) = jc.phone_normalized)
-               AND (f.gclid IS NOT NULL OR f.source = 'Google Ads')),
-            '9999-12-31'::timestamptz),
-            COALESCE((SELECT MIN(COALESCE(gc.kpi_date_created, gc.date_added)) FROM ghl_contacts gc
-             WHERE gc.customer_id = jc.customer_id
-               AND (gc.phone_normalized = jc.phone_normalized OR (jc.email IS NOT NULL AND jc.email <> '' AND lower(gc.email) = lower(jc.email)))
-               AND gc.gclid IS NOT NULL AND gc.gclid <> ''),
-            '9999-12-31'::timestamptz)
-          ) - INTERVAL '7 days'
-          AND (
-            -- Activity gap < 60 days (use jobber_created_at as proxy for last interaction)
-            EXTRACT(EPOCH FROM (LEAST(
-              COALESCE((SELECT MIN(c.start_time) FROM calls c
-               WHERE (c.callrail_id = jc.callrail_id OR (c.customer_id = jc.customer_id AND normalize_phone(c.caller_phone) = jc.phone_normalized))
-                 AND (c.source IN ('Google Ads','Google Ads 2') OR c.gclid IS NOT NULL OR c.classified_source = 'google_ads'
-                      OR EXISTS (SELECT 1 FROM callrail_trackers ct WHERE ct.tracker_id = c.tracker_id AND ct.source_type = 'google_ad_extension'))),
-              '9999-12-31'::timestamptz),
-              COALESCE((SELECT MIN(f.submitted_at) FROM form_submissions f
-               WHERE f.customer_id = jc.customer_id
-                 AND (f.callrail_id = jc.callrail_id OR normalize_phone(f.customer_phone) = jc.phone_normalized)
-                 AND (f.gclid IS NOT NULL OR f.source = 'Google Ads')),
-              '9999-12-31'::timestamptz),
-              COALESCE((SELECT MIN(COALESCE(gc.kpi_date_created, gc.date_added)) FROM ghl_contacts gc
-               WHERE gc.customer_id = jc.customer_id
-                 AND (gc.phone_normalized = jc.phone_normalized OR (jc.email IS NOT NULL AND jc.email <> '' AND lower(gc.email) = lower(jc.email)))
-                 AND gc.gclid IS NOT NULL AND gc.gclid <> ''),
-              '9999-12-31'::timestamptz)
-            ) - GREATEST(
-              jc.jobber_created_at,
-              COALESCE((SELECT MAX(j.start_at) FROM jobber_jobs j WHERE j.jobber_customer_id = jc.jobber_customer_id AND j.customer_id = jc.customer_id), jc.jobber_created_at),
-              COALESCE((SELECT MAX(q.created_at) FROM jobber_quotes q WHERE q.jobber_customer_id = jc.jobber_customer_id AND q.customer_id = jc.customer_id), jc.jobber_created_at)
-            )) / 86400 <= 60
-            -- OR had prior treatment job (non-inspection, completed, >= $1000)
-            OR EXISTS (SELECT 1 FROM jobber_jobs j2 WHERE j2.jobber_customer_id = jc.jobber_customer_id AND j2.customer_id = jc.customer_id
-              AND j2.status IN ('late','requires_invoicing') AND j2.total_cents >= 100000
-              AND NOT (LOWER(j2.title) LIKE '%assessment%' OR LOWER(j2.title) LIKE '%instascope%' OR LOWER(j2.title) LIKE '%inspection%'
-                OR LOWER(j2.title) LIKE '%mold test%' OR LOWER(j2.title) LIKE '%air quality%' OR LOWER(j2.title) LIKE '%air test%'))
-          )
-        THEN true ELSE false END as exclude_from_ga_roas,
         -- Inspection: request with assessment OR inspection-titled job
         GREATEST(
           COALESCE((SELECT COUNT(*) FROM jobber_requests jr WHERE jr.jobber_customer_id = jc.jobber_customer_id
@@ -1300,47 +766,37 @@ async function getJobberFunnel(pool, customerId, params, dateWhere, sourceWhere,
     ),
     period_spend AS (
       SELECT COALESCE(SUM(cost), 0) as ad_spend
-      FROM campaign_daily_metrics
+      FROM account_daily_metrics
       WHERE customer_id IN (SELECT customer_id FROM client_ids)
-        AND campaign_type != 'LOCAL_SERVICES'
         ${dateWhere.replace(/lead_date/g, 'date')}
     ),
     funnel_revenue AS (
       SELECT
-        COALESCE(SUM(CASE WHEN NOT COALESCE(exclude_from_ga_roas, false) THEN est_approved_cents ELSE 0 END), 0) / 100.0 as closed_rev,
+        COALESCE(SUM(est_approved_cents), 0) / 100.0 as closed_rev,
         COALESCE(SUM(CASE WHEN has_estimate_sent AND NOT has_estimate_approved
-            AND NOT COALESCE(exclude_from_ga_roas, false)
           THEN est_sent_cents ELSE 0 END), 0) / 100.0 as open_est_rev
       FROM matched_leads
     ),
-    -- All-time for guarantee (exclude LSA)
+    -- All-time for guarantee
     all_time_spend_j AS (
-      SELECT COALESCE(SUM(cost), 0) as total FROM campaign_daily_metrics
+      SELECT COALESCE(SUM(cost), 0) as total FROM account_daily_metrics
       WHERE customer_id IN (SELECT customer_id FROM client_ids)
-        AND campaign_type != 'LOCAL_SERVICES'
     ),
     all_time_rev_j AS (
-      SELECT COALESCE(SUM(CASE WHEN NOT COALESCE(ml.exclude_from_ga_roas, false) THEN q.total_cents ELSE 0 END), 0) / 100.0 as total
+      SELECT COALESCE(SUM(q.total_cents), 0) / 100.0 as total
       FROM jobber_quotes q
       JOIN jobber_customers jc ON jc.jobber_customer_id = q.jobber_customer_id AND jc.customer_id = q.customer_id
-      LEFT JOIN matched_leads ml ON ml.jobber_customer_id = jc.jobber_customer_id
       WHERE jc.customer_id IN (SELECT customer_id FROM client_ids)
         AND q.status IN ('approved','converted')
         AND (
           jc.attribution_override = 'google_ads'
           OR jc.callrail_id LIKE 'WF_%'
           OR EXISTS (SELECT 1 FROM calls ca WHERE ca.callrail_id = jc.callrail_id AND is_google_ads_call(ca.source, ca.source_name, ca.gclid))
-          OR EXISTS (SELECT 1 FROM calls ca JOIN callrail_trackers ct ON ct.tracker_id = ca.tracker_id
-            WHERE normalize_phone(ca.caller_phone) = jc.phone_normalized
-            AND ca.customer_id IN (SELECT customer_id FROM client_ids) AND ct.source_type = 'google_ad_extension')
           OR EXISTS (SELECT 1 FROM calls ca WHERE normalize_phone(ca.caller_phone) = jc.phone_normalized
             AND ca.customer_id IN (SELECT customer_id FROM client_ids) AND is_google_ads_call(ca.source, ca.source_name, ca.gclid))
           OR EXISTS (SELECT 1 FROM form_submissions fs WHERE fs.customer_id IN (SELECT customer_id FROM client_ids)
             AND (fs.callrail_id = jc.callrail_id OR fs.phone_normalized = jc.phone_normalized)
-            AND fs.gclid IS NOT NULL AND fs.gclid != '')
-          OR EXISTS (SELECT 1 FROM ghl_contacts gc WHERE gc.customer_id = jc.customer_id
-            AND (gc.phone_normalized = jc.phone_normalized OR (jc.email IS NOT NULL AND jc.email != '' AND LOWER(gc.email) = LOWER(jc.email)))
-            AND gc.gclid IS NOT NULL AND gc.gclid != '')
+            AND (fs.gclid IS NOT NULL OR fs.source = 'Google Ads'))
         )
     ),
     program_fee_j AS (
@@ -1389,7 +845,7 @@ async function getGhlFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
   let fmSourceWhere = '';
   if (sourceWhere.includes('is_google_ads_call')) {
     crSourceWhere = `AND is_google_ads_call(c.source, c.source_name, c.gclid)`;
-    fmSourceWhere = `AND f.gclid IS NOT NULL AND f.gclid != ''`;
+    fmSourceWhere = `AND (f.gclid IS NOT NULL OR f.source = 'Google Ads')`;
   }
 
   const crDateWhere = dateWhere.replace(/lead_date/g, 'lead_date');
@@ -1537,12 +993,11 @@ async function getGhlFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
     quality_leads AS (
       SELECT * FROM matched_leads WHERE NOT is_spam
     ),
-    -- Ad spend for the period (exclude LSA)
+    -- Ad spend for the period
     period_spend AS (
       SELECT COALESCE(SUM(cost), 0) as ad_spend
-      FROM campaign_daily_metrics
+      FROM account_daily_metrics
       WHERE customer_id IN (SELECT customer_id FROM client_ids)
-        AND campaign_type != 'LOCAL_SERVICES'
         ${spendDateWhere}
     ),
     -- Funnel revenue from quality leads
@@ -1553,11 +1008,10 @@ async function getGhlFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
           THEN est_sent_cents ELSE 0 END), 0) / 100.0 as open_est_rev
       FROM quality_leads
     ),
-    -- All-time spend (exclude LSA)
+    -- All-time spend
     all_time_spend_g AS (
-      SELECT COALESCE(SUM(cost), 0) as total FROM campaign_daily_metrics
+      SELECT COALESCE(SUM(cost), 0) as total FROM account_daily_metrics
       WHERE customer_id IN (SELECT customer_id FROM client_ids)
-        AND campaign_type != 'LOCAL_SERVICES'
     ),
     -- All-time GA-attributed GHL revenue (all dates, GA-matched only)
     all_time_rev_g AS (
@@ -1674,8 +1128,7 @@ fastify.get('/clients/:customerId/ad-spend-daily', async (request) => {
 // Campaign breakdown for Google Ads panel
 fastify.get('/clients/:customerId/campaign-breakdown', async (request) => {
   const { customerId } = request.params;
-  let { date_from, date_to } = request.query;
-  date_from = await clampDateFrom(pool, customerId, date_from);
+  const { date_from, date_to } = request.query;
   const endDate = date_to || new Date().toISOString().split('T')[0];
   const startDate = date_from || new Date(Date.now() - 90 * 86400000).toISOString().split('T')[0];
 
@@ -1697,8 +1150,7 @@ fastify.get('/clients/:customerId/campaign-breakdown', async (request) => {
 // Top search terms for Google Ads panel
 fastify.get('/clients/:customerId/search-terms', async (request) => {
   const { customerId } = request.params;
-  let { date_from, date_to, limit = 10 } = request.query;
-  date_from = await clampDateFrom(pool, customerId, date_from);
+  const { date_from, date_to, limit = 10 } = request.query;
   const endDate = date_to || new Date().toISOString().split('T')[0];
   const startDate = date_from || new Date(Date.now() - 90 * 86400000).toISOString().split('T')[0];
 
@@ -1722,8 +1174,7 @@ fastify.get('/clients/:customerId/search-terms', async (request) => {
 // Recent leads (calls + forms) for drill-down
 fastify.get('/clients/:customerId/leads', async (request) => {
   const { customerId } = request.params;
-  let { source = 'google_ads', date_from, date_to, limit = 50 } = request.query;
-  date_from = await clampDateFrom(pool, customerId, date_from);
+  const { source = 'google_ads', date_from, date_to, limit = 50 } = request.query;
 
   const endDate = date_to || new Date().toISOString().split('T')[0];
   const startDate = date_from || new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
@@ -1733,47 +1184,6 @@ fastify.get('/clients/:customerId/leads', async (request) => {
     sourceWhere = `AND is_google_ads_call(c.source, c.source_name, c.gclid)`;
   } else if (source === 'gbp') {
     sourceWhere = `AND c.source = 'Google My Business' AND NOT is_google_ads_call(c.source, c.source_name, c.gclid)`;
-  }
-
-  // Form source filter for leads drawer
-  let formSourceWhere = `AND f.gclid IS NOT NULL AND f.gclid != ''`;
-  if (source === 'gbp') {
-    formSourceWhere = `AND f.source = 'Google My Business' AND f.gclid IS NULL`;
-  }
-
-  if (source === 'lsa') {
-    // LSA leads: return from lsa_leads table with HCP funnel stage enrichment
-    const lsaRows = await pool.query(`
-      SELECT
-        l.lead_creation_time as contact_date,
-        COALESCE(l.contact_name, 'LSA Lead') as name,
-        l.contact_phone_normalized as phone,
-        l.lead_type as type,
-        NULL::int as duration,
-        'lsa' as answer_status,
-        'LSA' as source_name,
-        l.callrail_id,
-        l.hcp_customer_id,
-        l.contact_phone as phone_display,
-        l.lead_charged as charged,
-        -- HCP funnel stage
-        CASE
-          WHEN EXISTS (SELECT 1 FROM hcp_jobs j JOIN (SELECT phone_normalized, array_agg(hcp_customer_id) as ids FROM hcp_customers WHERE customer_id = $1 GROUP BY phone_normalized) pg ON j.hcp_customer_id = ANY(pg.ids) WHERE pg.phone_normalized = l.contact_phone_normalized AND j.record_status = 'active' AND j.status IN ('complete rated','complete unrated')) THEN 'Job Completed'
-          WHEN EXISTS (SELECT 1 FROM hcp_jobs j JOIN (SELECT phone_normalized, array_agg(hcp_customer_id) as ids FROM hcp_customers WHERE customer_id = $1 GROUP BY phone_normalized) pg ON j.hcp_customer_id = ANY(pg.ids) WHERE pg.phone_normalized = l.contact_phone_normalized AND j.record_status = 'active' AND j.status IN ('scheduled','in progress')) THEN 'Job Scheduled'
-          WHEN EXISTS (SELECT 1 FROM v_estimate_groups eg JOIN hcp_customers hc ON hc.hcp_customer_id = eg.hcp_customer_id WHERE hc.customer_id = $1 AND hc.phone_normalized = l.contact_phone_normalized AND eg.status = 'approved' AND eg.count_revenue) THEN 'Estimate Approved'
-          WHEN EXISTS (SELECT 1 FROM v_estimate_groups eg JOIN hcp_customers hc ON hc.hcp_customer_id = eg.hcp_customer_id WHERE hc.customer_id = $1 AND hc.phone_normalized = l.contact_phone_normalized AND eg.status IN ('sent','approved','declined') AND eg.count_revenue) THEN 'Estimate Sent'
-          WHEN EXISTS (SELECT 1 FROM hcp_inspections i JOIN (SELECT phone_normalized, array_agg(hcp_customer_id) as ids FROM hcp_customers WHERE customer_id = $1 GROUP BY phone_normalized) pg ON i.hcp_customer_id = ANY(pg.ids) WHERE pg.phone_normalized = l.contact_phone_normalized AND i.record_status = 'active' AND (i.status IN ('complete rated','complete unrated') OR i.inferred_complete)) THEN 'Inspection Complete'
-          WHEN EXISTS (SELECT 1 FROM hcp_inspections i JOIN (SELECT phone_normalized, array_agg(hcp_customer_id) as ids FROM hcp_customers WHERE customer_id = $1 GROUP BY phone_normalized) pg ON i.hcp_customer_id = ANY(pg.ids) WHERE pg.phone_normalized = l.contact_phone_normalized AND i.record_status = 'active') THEN 'Inspection Scheduled'
-          WHEN l.hcp_customer_id IS NOT NULL THEN 'In CRM'
-          ELSE NULL
-        END as stage
-      FROM lsa_leads l
-      WHERE l.customer_id = $1
-        AND l.lead_creation_time::date BETWEEN $2::date AND $3::date
-      ORDER BY l.lead_creation_time DESC
-      LIMIT $4
-    `, [customerId, startDate, endDate, limit]);
-    return lsaRows.rows;
   }
 
   const { rows } = await pool.query(`
@@ -1806,7 +1216,7 @@ fastify.get('/clients/:customerId/leads', async (request) => {
       FROM form_submissions f
       WHERE f.customer_id IN (SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1)
         AND f.submitted_at::date BETWEEN $2::date AND $3::date
-        ${formSourceWhere}
+        AND (f.gclid IS NOT NULL OR f.source = 'Google Ads')
         AND COALESCE(f.is_spam, false) = false
       ORDER BY f.submitted_at DESC
     )
@@ -1827,8 +1237,7 @@ fastify.get('/clients/:customerId/leads', async (request) => {
 fastify.get('/clients/:customerId/call-analytics', async (request) => {
   const { customerId } = request.params;
   const endDate = request.query.date_to || new Date().toISOString().split('T')[0];
-  let startDate = request.query.date_from || new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
-  startDate = await clampDateFrom(pool, customerId, startDate);
+  const startDate = request.query.date_from || new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
 
   // Calculate previous period (same length, shifted back)
   const start = new Date(startDate);
@@ -2120,8 +1529,7 @@ fastify.get('/clients/:customerId/recent-activity', async (request) => {
 
 fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
   const { customerId } = request.params;
-  let { source = 'google_ads', date_from, date_to } = request.query;
-  date_from = await clampDateFrom(pool, customerId, date_from);
+  const { source = 'google_ads', date_from, date_to } = request.query;
 
   const endDate = date_to || new Date().toISOString().split('T')[0];
   const startDate = date_from || new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
@@ -2189,46 +1597,6 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
     return await getGhlLeadSpreadsheet(pool, customerId, startDate, endDate, source);
   }
 
-  // Source-specific attribution filter
-  let attributionWhere = '';
-  let unmatchedSourceWhere = '';
-  if (source === 'gbp') {
-    attributionWhere = `AND (
-      hc.attribution_override = 'gbp'
-      OR EXISTS (SELECT 1 FROM calls ca WHERE ca.callrail_id = hc.callrail_id AND ca.source = 'Google My Business')
-    )`;
-    unmatchedSourceWhere = `AND c.source = 'Google My Business' AND NOT is_google_ads_call(c.source, c.source_name, c.gclid)`;
-  } else if (source === 'lsa') {
-    attributionWhere = `AND (
-      hc.attribution_override = 'lsa'
-      OR EXISTS (SELECT 1 FROM calls ca WHERE ca.callrail_id = hc.callrail_id AND ca.source_name = 'LSA')
-      OR EXISTS (SELECT 1 FROM lsa_leads l WHERE l.hcp_customer_id = hc.hcp_customer_id AND l.customer_id = hc.customer_id)
-    )`;
-    unmatchedSourceWhere = `AND c.source_name = 'LSA'`;
-  } else {
-    // Default: Google Ads
-    attributionWhere = `AND (
-      hc.attribution_override = 'google_ads'
-      OR hc.callrail_id LIKE 'WF_%'
-      OR EXISTS (SELECT 1 FROM calls ca WHERE ca.callrail_id = hc.callrail_id
-        AND is_google_ads_call(ca.source, ca.source_name, ca.gclid) AND COALESCE(ca.source_name,'') <> 'LSA')
-      OR EXISTS (SELECT 1 FROM form_submissions fs WHERE fs.customer_id = hc.customer_id
-        AND (fs.callrail_id = hc.callrail_id OR fs.phone_normalized = hc.phone_normalized
-          OR (hc.email IS NOT NULL AND LOWER(fs.customer_email) = LOWER(hc.email)))
-        AND fs.gclid IS NOT NULL AND fs.gclid != '')
-      OR EXISTS (SELECT 1 FROM ghl_contacts gc WHERE gc.customer_id = hc.customer_id
-        AND (gc.phone_normalized = hc.phone_normalized OR (hc.email IS NOT NULL AND hc.email != '' AND LOWER(gc.email) = LOWER(hc.email)))
-        AND gc.gclid IS NOT NULL AND gc.gclid != '')
-    )`;
-    unmatchedSourceWhere = `AND is_google_ads_call(c.source, c.source_name, c.gclid)`;
-  }
-
-  // Map source to mv_funnel_leads.lead_source (same as getHcpFunnel)
-  let mvSourceWhere = '';
-  if (source === 'gbp') mvSourceWhere = "AND fl.lead_source = 'gbp'";
-  else if (source === 'lsa') mvSourceWhere = "AND fl.lead_source = 'lsa'";
-  else if (source === 'google_ads') mvSourceWhere = "AND fl.lead_source = 'google_ads'";
-
   // Default: HCP lead spreadsheet
   const { rows } = await pool.query(`
     WITH client_ids AS (
@@ -2239,10 +1607,10 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
       FROM hcp_customers WHERE customer_id = $1
       GROUP BY phone_normalized
     ),
-    source_callrail_ids AS (
+    ga_callrail_ids AS (
       SELECT DISTINCT c.callrail_id FROM calls c
       WHERE c.customer_id IN (SELECT customer_id FROM client_ids)
-        ${unmatchedSourceWhere}
+        AND is_google_ads_call(c.source, c.source_name, c.gclid)
         AND c.callrail_id IS NOT NULL
     ),
     -- All GA-attributed HCP customers in period with funnel data
@@ -2347,7 +1715,19 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
       JOIN phone_groups pg ON pg.phone_normalized = hc.phone_normalized
       WHERE hc.customer_id IN (SELECT customer_id FROM client_ids)
         AND hc.hcp_created_at::date BETWEEN $2::date AND $3::date
-        ${attributionWhere}
+        AND (
+          hc.attribution_override = 'google_ads'
+          OR hc.callrail_id LIKE 'WF_%'
+          OR EXISTS (SELECT 1 FROM calls ca WHERE ca.callrail_id = hc.callrail_id
+            AND is_google_ads_call(ca.source, ca.source_name, ca.gclid) AND COALESCE(ca.source_name,'') <> 'LSA')
+          OR EXISTS (SELECT 1 FROM form_submissions fs WHERE fs.customer_id = hc.customer_id
+            AND (fs.callrail_id = hc.callrail_id OR fs.phone_normalized = hc.phone_normalized
+              OR (hc.email IS NOT NULL AND LOWER(fs.customer_email) = LOWER(hc.email)))
+            AND (fs.gclid IS NOT NULL OR fs.source = 'Google Ads'))
+          OR EXISTS (SELECT 1 FROM ghl_contacts gc WHERE gc.customer_id = hc.customer_id
+            AND (gc.phone_normalized = hc.phone_normalized OR (hc.email IS NOT NULL AND hc.email != '' AND LOWER(gc.email) = LOWER(hc.email)))
+            AND gc.gclid IS NOT NULL AND gc.gclid != '')
+        )
         AND COALESCE(hc.client_flag_reason, '') NOT IN ('spam', 'out_of_area', 'wrong_service')
         AND NOT EXISTS (
           SELECT 1 FROM ghl_contacts gc
@@ -2396,13 +1776,13 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
       FROM calls c
       WHERE c.customer_id IN (SELECT customer_id FROM client_ids)
         AND c.start_time::date BETWEEN $2::date AND $3::date
-        ${unmatchedSourceWhere}
+        AND is_google_ads_call(c.source, c.source_name, c.gclid)
         AND NOT EXISTS (SELECT 1 FROM hcp_leads hl WHERE hl.phone = normalize_phone(c.caller_phone))
         AND c.first_call = true
     ),
     -- Unmatched form submissions (no HCP record, no matching call)
     unmatched_forms AS (
-      SELECT DISTINCT ON (normalize_phone(f.customer_phone))
+      SELECT
         NULL as hcp_customer_id,
         COALESCE(NULLIF(TRIM(f.customer_name), ''), 'Form: ' || normalize_phone(f.customer_phone)) as name,
         normalize_phone(f.customer_phone) as phone,
@@ -2441,167 +1821,19 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
       FROM form_submissions f
       WHERE f.customer_id IN (SELECT customer_id FROM client_ids)
         AND f.submitted_at::date BETWEEN $2::date AND $3::date
-        AND f.gclid IS NOT NULL AND f.gclid != ''
+        AND (f.gclid IS NOT NULL OR f.source = 'Google Ads')
         AND normalize_phone(f.customer_phone) IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM hcp_leads hl WHERE hl.phone = normalize_phone(f.customer_phone))
         AND NOT EXISTS (SELECT 1 FROM unmatched u WHERE u.phone = normalize_phone(f.customer_phone))
-      ORDER BY normalize_phone(f.customer_phone), f.submitted_at DESC
-    ),
-    -- GHL contacts with GCLIDs not captured by CallRail (Webflow forms, direct GHL submissions)
-    unmatched_ghl AS (
-      SELECT DISTINCT ON (gc.phone_normalized)
-        NULL as hcp_customer_id,
-        COALESCE(NULLIF(TRIM(COALESCE(gc.first_name,'') || ' ' || COALESCE(gc.last_name,'')), ''), 'Unknown') as name,
-        gc.phone_normalized as phone,
-        gc.date_added as contact_date,
-        'unmatched' as match_status,
-        'form' as lead_type,
-        NULL as answer_status,
-        NULL::int as duration,
-        false as inspection_scheduled,
-        false as inspection_completed,
-        false as inspection_completed_inferred,
-        false as estimate_sent,
-        false as estimate_approved,
-        false as job_scheduled,
-        false as job_completed,
-        false as revenue_closed,
-        0::numeric as approved_revenue,
-        0::numeric as invoiced_revenue,
-        '[]'::json as invoice_breakdown,
-        0::numeric as estimate_value,
-        NULL as job_description,
-        NULL as service_address,
-        NULL as client_flag_reason,
-        NULL::timestamptz as client_flag_at,
-        gc.lost_reason
-      FROM ghl_contacts gc
-      WHERE gc.customer_id IN (SELECT customer_id FROM client_ids)
-        AND gc.gclid IS NOT NULL AND gc.gclid != ''
-        AND gc.phone_normalized IS NOT NULL AND gc.phone_normalized != ''
-        AND gc.date_added::date BETWEEN $2::date AND $3::date
-        AND NOT EXISTS (SELECT 1 FROM hcp_leads hl WHERE hl.phone = gc.phone_normalized)
-        AND NOT EXISTS (SELECT 1 FROM unmatched u WHERE u.phone = gc.phone_normalized)
-        AND NOT EXISTS (SELECT 1 FROM unmatched_forms uf WHERE uf.phone = gc.phone_normalized)
-      ORDER BY gc.phone_normalized, gc.date_added DESC
     )
-    SELECT l.*, COALESCE(fl.first_ga_touch_time IS NOT NULL
-      AND fl.hcp_created_at < fl.first_ga_touch_time - INTERVAL '7 days'
-      AND NOT COALESCE(fl.exclude_from_ga_roas, false), false) as reactivated
-    FROM (
-      SELECT * FROM hcp_leads
-      UNION ALL
-      SELECT * FROM unmatched
-      UNION ALL
-      SELECT * FROM unmatched_forms
-      UNION ALL
-      SELECT * FROM unmatched_ghl
-    ) l
-    LEFT JOIN mv_funnel_leads fl ON fl.hcp_customer_id = l.hcp_customer_id AND fl.customer_id = $1
-    ORDER BY l.contact_date DESC
+    SELECT * FROM hcp_leads
+    UNION ALL
+    SELECT * FROM unmatched
+    UNION ALL
+    SELECT * FROM unmatched_forms
+    ORDER BY contact_date DESC
   `, [customerId, startDate, endDate]);
-  // ====================================================================
-  // CRITICAL: This post-filter ensures drawer count matches funnel count.
-  // DO NOT remove or bypass. The drawer SQL and funnel SQL use different
-  // query paths. This post-filter uses the funnel's quality_phones as
-  // the authoritative phone list and fills any missing leads from fallback.
-  // See: project_funnel_accuracy_session.md for full context.
-  // ====================================================================
-  // Post-filter: use getHcpFunnel's quality_phones as single source of truth
-  const sourceWhere = source === 'google_ads' ? 'AND is_google_ads_call(c2.source, c2.source_name, c2.gclid)'
-    : source === 'gbp' ? "AND c2.source = 'Google My Business' AND NOT is_google_ads_call(c2.source, c2.source_name, c2.gclid)"
-    : source === 'lsa' ? "AND c2.source_name = 'LSA'" : '';
-  const funnelDateWhere = `AND lead_date BETWEEN '${startDate}'::date AND '${endDate}'::date`;
-  const funnelCidCTE = `WITH client_ids AS (SELECT customer_id FROM clients WHERE customer_id = ${customerId} OR parent_customer_id = ${customerId})`;
-  const extraSpam = clientResult.rows[0]?.extra_spam_keywords || null;
-  const funnelResult = await getHcpFunnel(pool, customerId, [], funnelDateWhere, sourceWhere, funnelCidCTE, extraSpam);
-  
-  const qualityPhones = funnelResult.quality_phones || [];
-  const qualityPhoneSet = new Set(qualityPhones);
-  let filtered = rows.filter(r => r.phone && qualityPhoneSet.has(r.phone));
-  
-  // Find phones that have a matched HCP record in mv_funnel_leads but only unmatched in drawer rows
-  // (happens when drawer SQL excludes them via GHL spam filter without CRM activity rescue)
-  const drawerMatchedPhones = new Set(filtered.filter(r => r.match_status === 'matched').map(r => r.phone));
-  const sourceFilter = source === 'gbp' ? "AND lead_source = 'gbp'" 
-    : source === 'lsa' ? "AND lead_source = 'lsa'"
-    : source === 'google_ads' ? "AND lead_source = 'google_ads'" : '';
-  const { rows: hcpMatchedRows } = await pool.query(
-    `SELECT DISTINCT phone_normalized FROM mv_funnel_leads WHERE customer_id = $1 AND phone_normalized = ANY($2) ${sourceFilter}`,
-    [customerId, qualityPhones]
-  );
-  const hcpMatchedSet = new Set(hcpMatchedRows.map(r => r.phone_normalized));
-  
-  // For phones in mv_funnel_leads but only showing as unmatched in drawer, drop the unmatched (matched will be added by fallback)
-  filtered = filtered.filter(r => {
-    if (r.match_status === 'unmatched' && hcpMatchedSet.has(r.phone) && !drawerMatchedPhones.has(r.phone)) {
-      return false; // Drop the unmatched, let the fallback add the matched
-    }
-    return true;
-  });
-  
-  // Fill missing phones from funnel that drawer SQL missed
-  const drawerPhones = new Set(filtered.map(r => r.phone));
-  const missingPhones = qualityPhones.filter(p => !drawerPhones.has(p));
-  if (missingPhones.length > 0) {
-    const { rows: missingRows } = await pool.query(`
-      SELECT fl.hcp_customer_id,
-        COALESCE(NULLIF(TRIM(COALESCE(fl.first_name,'') || ' ' || COALESCE(fl.last_name,'')), ''),
-          COALESCE((SELECT c.customer_name FROM calls c WHERE c.customer_id = fl.customer_id AND normalize_phone(c.caller_phone) = fl.phone_normalized ORDER BY c.start_time DESC LIMIT 1),
-            'Caller ID: ' || fl.phone_normalized)) as name,
-        fl.phone_normalized as phone, fl.hcp_created_at as contact_date,
-        'matched' as match_status, 'call' as lead_type, NULL as answer_status, NULL::int as duration,
-        fl.has_inspection_scheduled as inspection_scheduled, fl.has_inspection_completed as inspection_completed,
-        false as inspection_completed_inferred,
-        fl.has_estimate_sent as estimate_sent, fl.has_estimate_approved as estimate_approved,
-        fl.has_job_scheduled as job_scheduled, fl.has_job_completed as job_completed, fl.has_invoice as revenue_closed,
-        fl.est_approved_cents / 100.0 as approved_revenue, (fl.insp_invoice_cents + fl.treat_invoice_cents) / 100.0 as invoiced_revenue,
-        '[]'::json as invoice_breakdown, fl.est_sent_cents / 100.0 as estimate_value,
-        NULL as job_description, NULL as service_address, fl.client_flag_reason, NULL::timestamptz as client_flag_at,
-        NULL as lost_reason, false as reactivated
-      FROM mv_funnel_leads fl
-      WHERE fl.customer_id = $1 AND fl.phone_normalized = ANY($2) AND fl.lead_source = $3
-      UNION ALL
-      SELECT NULL, COALESCE(c.customer_name, 'Caller ID: ' || normalize_phone(c.caller_phone)),
-        normalize_phone(c.caller_phone), c.start_time, 'unmatched', 'call',
-        CASE WHEN c.answered THEN 'answered' ELSE 'missed' END, c.duration,
-        false, false, false, false, false, false, false, false, 0, 0, '[]'::json, 0,
-        NULL, NULL, NULL, NULL, NULL, false
-      FROM calls c WHERE c.customer_id IN (SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1)
-        AND normalize_phone(c.caller_phone) = ANY($2) AND c.first_call = true
-        AND NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl WHERE fl.customer_id = $1 AND fl.phone_normalized = normalize_phone(c.caller_phone))
-      UNION ALL
-      SELECT NULL, f.customer_name, normalize_phone(f.customer_phone), f.submitted_at, 'unmatched', 'form',
-        NULL, NULL, false, false, false, false, false, false, false, false, 0, 0, '[]'::json, 0,
-        NULL, NULL, NULL, NULL, NULL, false
-      FROM form_submissions f WHERE f.customer_id IN (SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1)
-        AND normalize_phone(f.customer_phone) = ANY($2)
-        AND NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl WHERE fl.customer_id = $1 AND fl.phone_normalized = normalize_phone(f.customer_phone))
-        AND NOT EXISTS (SELECT 1 FROM calls c WHERE c.customer_id IN (SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1)
-          AND normalize_phone(c.caller_phone) = normalize_phone(f.customer_phone) AND c.first_call = true)
-    `, [customerId, missingPhones, source === 'google_ads' ? 'google_ads' : source === 'gbp' ? 'gbp' : 'other']);
-    const seen = new Set();
-    for (const row of missingRows) {
-      if (!seen.has(row.phone)) { seen.add(row.phone); filtered.push(row); }
-    }
-  }
-  
-  // Compute reactivated badge from mv_funnel_leads (cross-phone check)
-  const { rows: reactivatedRows } = await pool.query(`
-    SELECT DISTINCT fl.phone_normalized as phone
-    FROM mv_funnel_leads fl
-    WHERE fl.customer_id = $1 ${mvSourceWhere}
-      AND fl.first_ga_touch_time IS NOT NULL
-      AND fl.hcp_created_at < fl.first_ga_touch_time - INTERVAL '7 days'
-      AND NOT COALESCE(fl.exclude_from_ga_roas, false)
-  `, [customerId]);
-  const reactivatedSet = new Set(reactivatedRows.map(r => r.phone));
-  for (const lead of filtered) {
-    if (lead.phone && reactivatedSet.has(lead.phone)) lead.reactivated = true;
-  }
-  
-  filtered.sort((a, b) => new Date(b.contact_date) - new Date(a.contact_date));
-  return filtered;
+  return rows;
 });
 
 // Jobber lead spreadsheet helper
@@ -2618,7 +1850,7 @@ async function getJobberLeadSpreadsheet(pool, customerId, startDate, endDate, so
         AND is_google_ads_call(ca.source, ca.source_name, ca.gclid))
       OR EXISTS (SELECT 1 FROM form_submissions fs WHERE fs.customer_id IN (SELECT customer_id FROM client_ids)
         AND (fs.callrail_id = jc.callrail_id OR fs.phone_normalized = jc.phone_normalized)
-        AND fs.gclid IS NOT NULL AND fs.gclid != '')
+        AND (fs.gclid IS NOT NULL OR fs.source = 'Google Ads'))
       OR EXISTS (SELECT 1 FROM ghl_contacts gc WHERE gc.customer_id = jc.customer_id
         AND (gc.phone_normalized = jc.phone_normalized OR (jc.email IS NOT NULL AND jc.email != '' AND LOWER(gc.email) = LOWER(jc.email)))
         AND gc.gclid IS NOT NULL AND gc.gclid != '')
@@ -2774,8 +2006,7 @@ async function getJobberLeadSpreadsheet(pool, customerId, startDate, endDate, so
 // Get open estimates + projected closes for a client
 fastify.get('/clients/:customerId/projected-roas', async (request) => {
   const { customerId } = request.params;
-  let { source = 'google_ads', date_from, date_to } = request.query;
-  date_from = await clampDateFrom(pool, customerId, date_from);
+  const { source = 'google_ads', date_from, date_to } = request.query;
 
   const endDate = date_to || new Date().toISOString().split('T')[0];
   const startDate = date_from || new Date(Date.now() - 90 * 86400000).toISOString().split('T')[0];
@@ -2811,12 +2042,12 @@ fastify.get('/clients/:customerId/projected-roas', async (request) => {
         AND (
           hc.attribution_override = 'google_ads'
           OR hc.callrail_id LIKE 'WF_%'
-          OR hc.callrail_id IN (SELECT callrail_id FROM source_callrail_ids)
+          OR hc.callrail_id IN (SELECT callrail_id FROM ga_callrail_ids)
           OR EXISTS (SELECT 1 FROM calls ca WHERE normalize_phone(ca.caller_phone) = hc.phone_normalized
             AND ca.customer_id IN (SELECT customer_id FROM client_ids) AND is_google_ads_call(ca.source, ca.source_name, ca.gclid))
           OR EXISTS (SELECT 1 FROM form_submissions fs WHERE fs.customer_id IN (SELECT customer_id FROM client_ids)
             AND (fs.callrail_id = hc.callrail_id OR fs.phone_normalized = hc.phone_normalized)
-            AND fs.gclid IS NOT NULL AND fs.gclid != '')
+            AND (fs.gclid IS NOT NULL OR fs.source = 'Google Ads'))
           OR EXISTS (SELECT 1 FROM ghl_contacts gc WHERE gc.customer_id = hc.customer_id
             AND (gc.phone_normalized = hc.phone_normalized OR (hc.email IS NOT NULL AND hc.email != '' AND LOWER(gc.email) = LOWER(hc.email)))
             AND gc.gclid IS NOT NULL AND gc.gclid != '')
@@ -2851,19 +2082,18 @@ fastify.get('/clients/:customerId/projected-roas', async (request) => {
             AND ca.customer_id IN (SELECT customer_id FROM client_ids) AND is_google_ads_call(ca.source, ca.source_name, ca.gclid))
           OR EXISTS (SELECT 1 FROM form_submissions fs WHERE fs.customer_id IN (SELECT customer_id FROM client_ids)
             AND (fs.callrail_id = jc.callrail_id OR fs.phone_normalized = jc.phone_normalized)
-            AND fs.gclid IS NOT NULL AND fs.gclid != '')
+            AND (fs.gclid IS NOT NULL OR fs.source = 'Google Ads'))
         )
       ORDER BY q.total_cents DESC
     `, [customerId, startDate, endDate]);
     openEstimates = rows;
   }
 
-  // Get current closed rev + ad spend for context (exclude LSA)
+  // Get current closed rev + ad spend for context
   const { rows: spendRows } = await pool.query(`
     SELECT COALESCE(SUM(cost), 0) as ad_spend
-    FROM campaign_daily_metrics
+    FROM account_daily_metrics
     WHERE customer_id IN (SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1)
-      AND campaign_type != 'LOCAL_SERVICES'
       AND date BETWEEN $2::date AND $3::date
   `, [customerId, startDate, endDate]);
 
@@ -3115,13 +2345,7 @@ fastify.get('/clients/:customerId/lead-detail/:hcpCustomerId', async (request) =
         'answered', COALESCE(c.ai_answered, CASE WHEN c.answered THEN 'answered' ELSE 'missed' END),
         'source', c.source,
         'source_name', c.source_name
-      ) FROM calls c WHERE c.callrail_id = hc.callrail_id LIMIT 1) as call_info,
-      -- Reactivation badge
-      COALESCE((SELECT fl.first_ga_touch_time IS NOT NULL
-        AND fl.hcp_created_at < fl.first_ga_touch_time - INTERVAL '7 days'
-        AND NOT COALESCE(fl.exclude_from_ga_roas, false)
-        FROM mv_funnel_leads fl
-        WHERE fl.hcp_customer_id = hc.hcp_customer_id AND fl.customer_id = hc.customer_id), false) as reactivated
+      ) FROM calls c WHERE c.callrail_id = hc.callrail_id LIMIT 1) as call_info
     FROM hcp_customers hc
     JOIN (SELECT phone_normalized, array_agg(hcp_customer_id) as all_ids
           FROM hcp_customers WHERE customer_id = $2
@@ -3139,7 +2363,7 @@ fastify.get('/clients/:customerId/lead-detail/:hcpCustomerId', async (request) =
 
 fastify.get('/clients/:customerId/monthly-trend', async (request) => {
   const { customerId } = request.params;
-  const { months = 6, campaign } = request.query;
+  const { months = 6 } = request.query;
 
   // Check client's field management software
   const clientResult = await pool.query(
@@ -3161,11 +2385,6 @@ fastify.get('/clients/:customerId/monthly-trend', async (request) => {
     ),
     -- GA-attributed contacts per month (calls + forms, unique phones)
     -- Two-step: first get all phones, then count spam via LEFT JOIN
-    campaign_filter AS (
-      SELECT DISTINCT gclid FROM gclid_campaign_map
-      WHERE customer_id IN (SELECT customer_id FROM client_ids)
-        AND campaign_name = COALESCE($3, campaign_name)
-    ),
     all_monthly_phones AS (
       SELECT DATE_TRUNC('month', c.start_time)::date as month_start,
         normalize_phone(c.caller_phone) as phone
@@ -3173,7 +2392,6 @@ fastify.get('/clients/:customerId/monthly-trend', async (request) => {
       WHERE c.customer_id IN (SELECT customer_id FROM client_ids)
         AND is_google_ads_call(c.source, c.source_name, c.gclid)
         AND c.start_time >= DATE_TRUNC('month', CURRENT_DATE) - ($2::int - 1) * INTERVAL '1 month'
-        AND ($3 IS NULL OR c.gclid IN (SELECT gclid FROM campaign_filter))
       UNION
       SELECT DATE_TRUNC('month', fs.submitted_at)::date as month_start,
         COALESCE(normalize_phone(fs.customer_phone), 'form_' || fs.callrail_id) as phone
@@ -3182,20 +2400,10 @@ fastify.get('/clients/:customerId/monthly-trend', async (request) => {
         AND (fs.gclid IS NOT NULL OR fs.source = 'Google Ads')
         AND COALESCE(fs.is_spam, false) = false
         AND fs.submitted_at >= DATE_TRUNC('month', CURRENT_DATE) - ($2::int - 1) * INTERVAL '1 month'
-        AND ($3 IS NULL OR fs.gclid IN (SELECT gclid FROM campaign_filter))
         AND NOT EXISTS (SELECT 1 FROM calls c2
           WHERE c2.customer_id IN (SELECT customer_id FROM client_ids)
             AND is_google_ads_call(c2.source, c2.source_name, c2.gclid)
             AND normalize_phone(c2.caller_phone) = normalize_phone(fs.customer_phone))
-        -- Exclude bot form spam: Direct source + gibberish name OR low vowel ratio
-        AND NOT (
-          fs.customer_name ~ '^[A-Z]{8,}\\s+[A-Z]{8,}$'
-          AND (
-            COALESCE(fs.source, '') = 'Direct'
-            OR LENGTH(REGEXP_REPLACE(UPPER(fs.customer_name), '[^AEIOU]', '', 'g'))::float
-               / NULLIF(LENGTH(REGEXP_REPLACE(fs.customer_name, '\\s', '', 'g')), 0) < 0.25
-          )
-        )
     ),
     -- Spam phones from GHL
     spam_phones AS (
@@ -3235,16 +2443,14 @@ fastify.get('/clients/:customerId/monthly-trend', async (request) => {
       LEFT JOIN abandoned_phones ab ON ab.phone = amp.phone
       GROUP BY amp.month_start
     ),
-    -- Ad spend per month (exclude LSA)
+    -- Ad spend per month
     monthly_spend AS (
       SELECT DATE_TRUNC('month', date)::date as month_start,
         SUM(cost) as spend,
         SUM(conversions) as conversions
-      FROM campaign_daily_metrics
+      FROM account_daily_metrics
       WHERE customer_id IN (SELECT customer_id FROM client_ids)
-        AND campaign_type != 'LOCAL_SERVICES'
         AND date >= DATE_TRUNC('month', CURRENT_DATE) - ($2::int - 1) * INTERVAL '1 month'
-        AND ($3 IS NULL OR campaign_name = $3)
       GROUP BY 1
     ),
     -- Pre-compute spam phones (excluding those with CRM activity)
@@ -3252,7 +2458,6 @@ fastify.get('/clients/:customerId/monthly-trend', async (request) => {
       SELECT DISTINCT gc.phone_normalized as phone
       FROM ghl_contacts gc
       WHERE gc.customer_id IN (SELECT customer_id FROM client_ids)
-        AND gc.phone_normalized IS NOT NULL AND gc.phone_normalized != ''
         AND LOWER(gc.lost_reason) SIMILAR TO '%(spam|not a lead|wrong number|out of area|wrong service|abandoned)%'
         AND NOT EXISTS (SELECT 1 FROM hcp_customers hc3
           WHERE hc3.customer_id IN (SELECT customer_id FROM client_ids) AND hc3.phone_normalized = gc.phone_normalized
@@ -3263,37 +2468,44 @@ fastify.get('/clients/:customerId/monthly-trend', async (request) => {
             OR EXISTS (SELECT 1 FROM hcp_jobs j3 WHERE j3.hcp_customer_id = hc3.hcp_customer_id AND j3.record_status = 'active')
           ))
     ),
-    -- Aggregate funnel data by CallRail lead date using mv_funnel_leads (same source as main funnel)
-    -- Compute lead_date per mv_funnel_leads record: LEAST(callrail_date, hcp_created_at)
-    fl_with_lead_date AS (
-      SELECT fl.*,
-        DATE_TRUNC('month', LEAST(
-          fl.hcp_created_at,
-          (SELECT MIN(c.start_time) FROM calls c WHERE c.callrail_id = fl.callrail_id),
-          (SELECT MIN(fs.submitted_at) FROM form_submissions fs WHERE fs.callrail_id = fl.callrail_id)
-        ))::date AS lead_month
-      FROM mv_funnel_leads fl
-      WHERE fl.customer_id IN (SELECT customer_id FROM client_ids)
-        AND fl.lead_source = 'google_ads'
+    -- GA-attributed HCP customers (pre-filtered small set)
+    ga_hcp AS (
+      SELECT hc.hcp_customer_id, hc.phone_normalized, hc.hcp_created_at
+      FROM hcp_customers hc
+      WHERE hc.customer_id IN (SELECT customer_id FROM client_ids)
+        AND hc.hcp_created_at >= DATE_TRUNC('month', CURRENT_DATE) - ($2::int - 1) * INTERVAL '1 month'
+        AND COALESCE(hc.client_flag_reason, '') NOT IN ('spam', 'out_of_area', 'wrong_service')
+        AND hc.phone_normalized NOT IN (SELECT phone FROM trend_spam_phones)
+        AND (
+          hc.attribution_override = 'google_ads'
+          OR hc.callrail_id LIKE 'WF_%'
+          OR EXISTS (SELECT 1 FROM calls ca WHERE ca.callrail_id = hc.callrail_id AND is_google_ads_call(ca.source, ca.source_name, ca.gclid))
+          OR EXISTS (SELECT 1 FROM form_submissions fs WHERE fs.customer_id IN (SELECT customer_id FROM client_ids)
+            AND (fs.callrail_id = hc.callrail_id OR fs.phone_normalized = hc.phone_normalized)
+            AND (fs.gclid IS NOT NULL OR fs.source = 'Google Ads'))
+          OR EXISTS (SELECT 1 FROM ghl_contacts gc WHERE gc.customer_id = hc.customer_id
+            AND (gc.phone_normalized = hc.phone_normalized OR (hc.email IS NOT NULL AND hc.email != '' AND LOWER(gc.email) = LOWER(hc.email)))
+            AND gc.gclid IS NOT NULL AND gc.gclid != '')
+        )
     ),
+    -- Aggregate funnel data only on GA-attributed customers
     monthly_hcp AS (
-      SELECT fl.lead_month AS month_start,
-        COUNT(DISTINCT fl.phone_normalized) as matched_leads,
-        COUNT(DISTINCT fl.phone_normalized) FILTER (WHERE fl.has_inspection_scheduled) as inspections_booked,
-        COUNT(DISTINCT fl.phone_normalized) FILTER (WHERE fl.has_estimate_approved) as estimates_approved,
+      SELECT DATE_TRUNC('month', hc.hcp_created_at)::date as month_start,
+        COUNT(DISTINCT hc.hcp_customer_id) as matched_leads,
+        COUNT(DISTINCT hc.hcp_customer_id) FILTER (WHERE EXISTS (
+          SELECT 1 FROM hcp_inspections i WHERE i.hcp_customer_id = hc.hcp_customer_id
+            AND i.record_status = 'active' AND (i.status IN ('scheduled','complete rated','complete unrated','in progress') OR i.scheduled_at IS NOT NULL)
+        )) as inspections_booked,
+        COUNT(DISTINCT hc.hcp_customer_id) FILTER (WHERE EXISTS (
+          SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = hc.hcp_customer_id
+            AND eg.status = 'approved' AND eg.count_revenue
+        )) as estimates_approved,
         COALESCE(SUM(
-          CASE WHEN fl.treat_invoice_cents > 0 OR fl.est_approved_cents > 0
-            THEN fl.insp_invoice_cents + GREATEST(fl.treat_invoice_cents, fl.est_approved_cents)
-            ELSE fl.job_cents + fl.insp_invoice_cents END
-        ), 0) / 100.0 as revenue,
-        COALESCE(SUM(fl.invoice_cents + fl.insp_invoice_cents), 0) / 100.0 as invoice_revenue
-      FROM fl_with_lead_date fl
-      LEFT JOIN spam_phones sp ON sp.phone = fl.phone_normalized
-      WHERE sp.phone IS NULL
-        AND NOT COALESCE(fl.ghl_spam, false)
-        AND COALESCE(fl.client_flag_reason, '') NOT IN ('spam', 'out_of_area', 'wrong_service')
-        AND fl.lead_month >= DATE_TRUNC('month', CURRENT_DATE) - ($2::int - 1) * INTERVAL '1 month'
-      GROUP BY fl.lead_month
+          COALESCE((SELECT SUM(eg.approved_total_cents) FROM v_estimate_groups eg
+            WHERE eg.hcp_customer_id = hc.hcp_customer_id AND eg.status = 'approved' AND eg.count_revenue), 0)
+        ), 0) / 100.0 as revenue
+      FROM ga_hcp hc
+      GROUP BY 1
     )
     SELECT m.month_start,
       TO_CHAR(m.month_start, 'Mon YYYY') as label,
@@ -3304,10 +2516,8 @@ fastify.get('/clients/:customerId/monthly-trend', async (request) => {
       COALESCE(ml.abandoned, 0) as abandoned,
       COALESCE(ms.spend, 0) as spend,
       COALESCE(mh.revenue, 0) as revenue,
-      COALESCE(mh.invoice_revenue, 0) as invoice_revenue,
       CASE WHEN COALESCE(ml.leads, 0) > 0 THEN ROUND(COALESCE(ms.spend, 0) / ml.leads, 2) ELSE 0 END as cpl,
       CASE WHEN COALESCE(ms.spend, 0) > 0 THEN ROUND(COALESCE(mh.revenue, 0) / ms.spend, 2) ELSE 0 END as roas,
-      CASE WHEN COALESCE(ms.spend, 0) > 0 THEN ROUND(COALESCE(mh.invoice_revenue, 0) / ms.spend, 2) ELSE 0 END as invoice_roas,
       COALESCE(ms.conversions, 0) as conversions,
       COALESCE(mh.inspections_booked, 0) as inspections_booked,
       COALESCE(mh.estimates_approved, 0) as estimates_approved,
@@ -3318,7 +2528,7 @@ fastify.get('/clients/:customerId/monthly-trend', async (request) => {
     LEFT JOIN monthly_spend ms ON ms.month_start = m.month_start
     LEFT JOIN monthly_hcp mh ON mh.month_start = m.month_start
     ORDER BY m.month_start
-  `, [customerId, months, campaign || null]);
+  `, [customerId, months]);
 
   // Add excluded_abandoned: abandoned count that should be excluded from quality leads
   // For clients with extra_spam_keywords including 'abandoned', all abandoned are excluded
@@ -3336,151 +2546,7 @@ fastify.get('/clients/:customerId/monthly-trend', async (request) => {
       row.excluded_abandoned = 0;
     }
   }
-
-  // ---------- Projection helper: historical pace + recent average ----------
-  // Only compute for the current (incomplete) month
-  const now = new Date();
-  const currentDay = now.getDate();
-  const currentMonthStart = new Date(Date.UTC(now.getFullYear(), now.getMonth(), 1)).toISOString().slice(0, 10);
-  const currentRow = rows.find(r => r.month_start.toISOString?.().slice(0, 10) === currentMonthStart
-    || new Date(r.month_start).toISOString().slice(0, 10) === currentMonthStart);
-
-  if (currentRow && rows.length >= 4) {
-    // Historical pace: what fraction of monthly leads typically arrive by this day?
-    const paceResult = await pool.query(`
-      WITH daily AS (
-        SELECT DATE_TRUNC('month', c.start_time)::date AS month_start,
-          EXTRACT(DAY FROM c.start_time)::int AS dom,
-          normalize_phone(c.caller_phone) AS phone
-        FROM calls c
-        WHERE c.customer_id IN (SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1)
-          AND is_google_ads_call(c.source, c.source_name, c.gclid)
-          AND c.start_time >= DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '12 months'
-          AND c.start_time < DATE_TRUNC('month', CURRENT_DATE)
-      ),
-      monthly_totals AS (
-        SELECT month_start, COUNT(DISTINCT phone) AS total
-        FROM daily GROUP BY month_start HAVING COUNT(DISTINCT phone) >= 5
-      ),
-      cumulative AS (
-        SELECT d.month_start,
-          COUNT(DISTINCT d.phone) FILTER (WHERE d.dom <= $2) AS by_day,
-          mt.total
-        FROM daily d
-        JOIN monthly_totals mt ON mt.month_start = d.month_start
-        GROUP BY d.month_start, mt.total
-      )
-      SELECT CASE WHEN COUNT(*) >= 3 THEN ROUND(AVG(by_day::numeric / total), 4) ELSE NULL END AS pace_fraction,
-        COUNT(*) AS months_used
-      FROM cumulative WHERE total > 0
-    `, [customerId, currentDay]);
-
-    const paceFraction = paceResult.rows[0]?.pace_fraction ? parseFloat(paceResult.rows[0].pace_fraction) : null;
-
-    // Recent average: last 3 complete months of quality leads
-    const completeMonths = rows.filter(r => {
-      const ms = new Date(r.month_start).toISOString().slice(0, 10);
-      return ms !== currentMonthStart;
-    }).slice(-3);
-    const recentAvg = completeMonths.length >= 3
-      ? completeMonths.reduce((sum, r) => {
-          const leads = parseInt(r.leads) || 0;
-          const spam = parseInt(r.spam) || 0;
-          const excAbandoned = parseInt(r.excluded_abandoned) || 0;
-          return sum + (leads - spam - excAbandoned);
-        }, 0) / completeMonths.length
-      : null;
-
-    currentRow.projection_pace_fraction = paceFraction;
-    currentRow.projection_recent_avg = recentAvg !== null ? Math.round(recentAvg) : null;
-  }
-
-
   return rows;
-});
-
-// ============================================================
-// Analytics — Campaign Trend (leads per campaign per month)
-// ============================================================
-
-fastify.get('/clients/:customerId/campaign-trend', async (request) => {
-  const { customerId } = request.params;
-  const { months = 12 } = request.query;
-
-  const { rows } = await pool.query(`
-    WITH cids AS (
-      SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1
-    ),
-    months AS (
-      SELECT generate_series(
-        DATE_TRUNC('month', CURRENT_DATE) - ($2::int - 1) * INTERVAL '1 month',
-        DATE_TRUNC('month', CURRENT_DATE),
-        '1 month'
-      )::date as month_start
-    ),
-    -- Map calls to campaigns via GCLID
-    call_campaigns AS (
-      SELECT
-        DATE_TRUNC('month', c.start_time)::date AS month_start,
-        normalize_phone(c.caller_phone) AS phone,
-        COALESCE(gcm.campaign_name, 'Unknown') AS campaign_name
-      FROM calls c
-      JOIN gclid_campaign_map gcm ON gcm.gclid = c.gclid AND gcm.customer_id = c.customer_id
-      WHERE c.customer_id IN (SELECT customer_id FROM cids)
-        AND is_google_ads_call(c.source, c.source_name, c.gclid)
-        AND c.start_time >= DATE_TRUNC('month', CURRENT_DATE) - ($2::int - 1) * INTERVAL '1 month'
-      UNION ALL
-      SELECT
-        DATE_TRUNC('month', fs.submitted_at)::date AS month_start,
-        fs.phone_normalized AS phone,
-        gcm.campaign_name
-      FROM form_submissions fs
-      JOIN gclid_campaign_map gcm ON gcm.gclid = fs.gclid AND gcm.customer_id = fs.customer_id
-      WHERE fs.customer_id IN (SELECT customer_id FROM cids)
-        AND fs.gclid IS NOT NULL AND fs.gclid != ''
-        AND COALESCE(fs.is_spam, false) = false
-        AND fs.submitted_at >= DATE_TRUNC('month', CURRENT_DATE) - ($2::int - 1) * INTERVAL '1 month'
-    ),
-    -- Get unique campaigns with significant volume
-    campaign_totals AS (
-      SELECT campaign_name, COUNT(DISTINCT phone) AS total
-      FROM call_campaigns
-      GROUP BY campaign_name
-    ),
-    -- Monthly leads per campaign
-    monthly AS (
-      SELECT
-        m.month_start,
-        ct.campaign_name,
-        COUNT(DISTINCT cc.phone) AS leads
-      FROM months m
-      CROSS JOIN campaign_totals ct
-      LEFT JOIN call_campaigns cc ON cc.month_start = m.month_start AND cc.campaign_name = ct.campaign_name
-      GROUP BY m.month_start, ct.campaign_name
-    )
-    SELECT
-      month_start,
-      TO_CHAR(month_start, 'Mon') AS short_label,
-      campaign_name,
-      COALESCE(leads, 0) AS leads
-    FROM monthly
-    ORDER BY month_start, campaign_name
-  `, [customerId, months]);
-
-  // Group by campaign
-  const campaigns = {};
-  for (const row of rows) {
-    if (!campaigns[row.campaign_name]) {
-      campaigns[row.campaign_name] = { name: row.campaign_name, data: [] };
-    }
-    campaigns[row.campaign_name].data.push({
-      month_start: row.month_start,
-      short_label: row.short_label,
-      leads: parseInt(row.leads),
-    });
-  }
-
-  return Object.values(campaigns);
 });
 
 // ============================================================
@@ -3499,32 +2565,11 @@ fastify.get('/clients/:customerId/source-tabs', async (request) => {
   if (config.source_tabs) return config.source_tabs;
 
   // Default tabs
-  const fms = rows[0].field_management_software;
-
-  // Check if client has GBP data
-  const { rows: gbpRows } = await pool.query(
-    `SELECT 1 FROM calls WHERE customer_id = $1 AND source = 'Google My Business' LIMIT 1`,
-    [customerId]
-  );
-  const hasGbp = gbpRows.length > 0;
-
   const tabs = [
     { key: 'all', label: 'Full Business' },
     { key: 'google_ads', label: 'Google Ads' },
-    ...(hasGbp
-      ? [{ key: 'gbp', label: 'Google Business Profile' }]
-      : [{ key: 'gbp', label: 'Google Business Profile', coming_soon: true }]),
+    { key: 'gbp', label: 'Google Business Profile', coming_soon: true },
   ];
-
-  // Add LSA tab only if client has LSA spend
-  const { rows: lsaRows } = await pool.query(
-    `SELECT 1 FROM campaign_daily_metrics WHERE customer_id = $1 AND campaign_type = 'LOCAL_SERVICES' LIMIT 1`,
-    [customerId]
-  );
-  if (lsaRows.length > 0) {
-    tabs.push({ key: 'lsa', label: 'Local Services Ads' });
-  }
-
   return tabs;
 });
 
@@ -3534,30 +2579,12 @@ fastify.get('/clients/:customerId/source-tabs', async (request) => {
 
 fastify.get('/share/validate/:token', async (request) => {
   const { token } = request.params;
-  // Try clients first
   const { rows } = await pool.query(
     `SELECT customer_id, name, field_management_software, start_date, status FROM clients WHERE dashboard_token = $1 AND status = 'active'`,
     [token]
   );
-  if (rows.length > 0) {
-    return { type: 'client', ...rows[0] };
-  }
-  // Try groups (multi-client rollup)
-  const { rows: groupRows } = await pool.query(`
-    SELECT g.group_id, g.name, g.slug, g.description,
-           array_agg(m.customer_id ORDER BY m.display_order) AS member_ids,
-           array_agg(c.name ORDER BY m.display_order) AS member_names,
-           MIN(c.start_date) AS start_date
-    FROM client_groups g
-    LEFT JOIN client_group_members m USING (group_id)
-    LEFT JOIN clients c ON c.customer_id = m.customer_id
-    WHERE g.dashboard_token = $1
-    GROUP BY g.group_id, g.name, g.slug, g.description
-  `, [token]);
-  if (groupRows.length > 0) {
-    return { type: 'group', ...groupRows[0] };
-  }
-  return { error: 'Invalid or expired link' };
+  if (rows.length === 0) return { error: 'Invalid or expired link' };
+  return rows[0];
 });
 
 // ============================================================
@@ -3692,7 +2719,7 @@ async function getGhlLeadSpreadsheet(pool, customerId, startDate, endDate, sourc
   let gclidWhere = '';
   if (source === 'google_ads') {
     crSourceWhere = "AND is_google_ads_call(c.source, c.source_name, c.gclid)";
-    fmSourceWhere = "AND f.gclid IS NOT NULL AND f.gclid != ''";
+    fmSourceWhere = "AND (f.gclid IS NOT NULL OR f.source = 'Google Ads')";
     gclidWhere = "UNION SELECT DISTINCT gc2.phone_normalized as phone FROM ghl_contacts gc2 WHERE gc2.customer_id = $1 AND gc2.gclid IS NOT NULL AND gc2.phone_normalized IS NOT NULL";
   }
 

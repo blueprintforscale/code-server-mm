@@ -4,7 +4,6 @@
  * Port: 3100
  */
 
-require('dotenv').config();
 const express = require('express');
 const { Pool } = require('pg');
 const path = require('path');
@@ -560,6 +559,114 @@ app.get('/api/dashboard', async (req, res) => {
       }
     });
 
+    // Merge confirmed status (sticky status anti-flapping)
+    const [confirmedResult, overrideResult, locationResult, manualRiskResult, liveContactResult, cadenceResult] = await Promise.all([
+      pool.query(`SELECT customer_id, confirmed_status, confirmed_risk_type,
+                         pending_status, pending_streak, confirmed_at
+                  FROM client_confirmed_status`),
+      pool.query(`SELECT customer_id FROM clients WHERE risk_override IS NOT NULL`),
+      pool.query(`SELECT DISTINCT customer_id FROM client_location_groups`),
+      pool.query(`SELECT customer_id FROM clients WHERE manual_risk = TRUE`),
+      pool.query(`
+        WITH last_contact AS (
+          SELECT customer_id,
+            MAX(interaction_date) FILTER (WHERE interaction_type IN ('call', 'meeting') AND interaction_date <= NOW()) AS last_live
+          FROM client_interactions
+          WHERE interaction_type IN ('call', 'meeting', 'call_attempt')
+          GROUP BY customer_id
+        )
+        SELECT lc.customer_id,
+          EXTRACT(DAY FROM NOW() - lc.last_live)::INT AS days_since_live_contact,
+          lc.last_live::TEXT AS last_live_contact_date,
+          (SELECT COUNT(*) FROM client_interactions ci2
+           WHERE ci2.customer_id = lc.customer_id
+             AND ci2.interaction_type = 'call_attempt'
+             AND ci2.interaction_date > COALESCE(lc.last_live, '1970-01-01'::timestamptz)
+          )::INT AS attempts_since_last_contact
+        FROM last_contact lc
+      `),
+      pool.query(`SELECT customer_id, contact_cadence_override,
+          CASE WHEN last_campaign_launch_date IS NOT NULL THEN
+            EXTRACT(MONTH FROM age(CURRENT_DATE, last_campaign_launch_date))::int
+              + EXTRACT(YEAR FROM age(CURRENT_DATE, last_campaign_launch_date))::int * 12
+          END AS months_since_campaign_launch
+        FROM clients WHERE status = 'active'`)
+    ]);
+    const manualRiskSet = new Set(manualRiskResult.rows.map(r => String(r.customer_id)));
+    const liveContactMap = {};
+    liveContactResult.rows.forEach(r => { liveContactMap[String(r.customer_id)] = r; });
+    const cadenceMap = {};
+    cadenceResult.rows.forEach(r => { cadenceMap[String(r.customer_id)] = { override: r.contact_cadence_override, months_since_campaign: r.months_since_campaign_launch != null ? Number(r.months_since_campaign_launch) : null }; });
+    const confirmedMap = {};
+    confirmedResult.rows.forEach(c => { confirmedMap[String(c.customer_id)] = c; });
+    const overrideSet = new Set(overrideResult.rows.map(r => String(r.customer_id)));
+    const locationSet = new Set(locationResult.rows.map(r => String(r.customer_id)));
+    merged.forEach(r => {
+      r.has_locations = locationSet.has(String(r.customer_id));
+      r.manual_risk = manualRiskSet.has(String(r.customer_id));
+      // Live contact tracking
+      const lc = liveContactMap[String(r.customer_id)];
+      r.days_since_live_contact = lc ? Number(lc.days_since_live_contact) : null;
+      r.last_live_contact_date = lc ? lc.last_live_contact_date : null;
+      r.attempts_since_last_contact = lc ? Number(lc.attempts_since_last_contact) : 0;
+      const cadenceInfo = cadenceMap[String(r.customer_id)] || {};
+      r.contact_cadence_override = cadenceInfo.override || null;
+      r.months_since_campaign_launch = cadenceInfo.months_since_campaign;
+      // Compute effective cadence days
+      const override = r.contact_cadence_override;
+      if (override === 'none') { r.contact_cadence = null; }
+      else if (override) { r.contact_cadence = { weekly: 7, biweekly: 14, monthly: 30 }[override] || 30; }
+      else {
+        // Use the more recent of start_date or last_campaign_launch_date for onboarding cadence
+        const months = Math.min(r.months_in_program ?? 999, r.months_since_campaign_launch ?? 999);
+        if (months <= 1) { r.contact_cadence = 7; }
+        else if (months <= 3) { r.contact_cadence = 14; }
+        else if (r.manual_risk || r.status === 'Risk') { r.contact_cadence = 7; }
+        else if (r.status === 'Flag') { r.contact_cadence = 14; }
+        else { r.contact_cadence = 30; }
+      }
+    });
+    merged.forEach(r => {
+      const c = confirmedMap[String(r.customer_id)];
+      // risk_override trumps everything — skip confirmed merge
+      if (overrideSet.has(String(r.customer_id))) {
+        r.computed_status = r.status;
+        r.computed_risk_type = r.risk_type;
+        r.pending_status = null;
+        r.pending_streak = 0;
+        return;
+      }
+      if (c) {
+        r.computed_status = r.status;
+        r.computed_risk_type = r.risk_type;
+        r.status = c.confirmed_status;
+        r.risk_type = c.confirmed_risk_type || '';
+        r.pending_status = c.pending_status;
+        r.pending_streak = parseInt(c.pending_streak) || 0;
+        // Re-derive sort_priority from confirmed status
+        if (c.confirmed_status === 'Risk') {
+          r.sort_priority = c.confirmed_risk_type === 'Both Risk' ? 1
+            : c.confirmed_risk_type === 'Ads Risk' ? 2 : 3;
+        } else if (c.confirmed_status === 'Flag') {
+          r.sort_priority = 4;
+        } else {
+          r.sort_priority = 5;
+        }
+      } else {
+        r.computed_status = r.status;
+        r.computed_risk_type = r.risk_type;
+        r.pending_status = null;
+        r.pending_streak = 0;
+      }
+    });
+    // Re-sort: Both Risk (1) first, then manual_risk, then rest by sort_priority
+    merged.sort((a, b) => {
+      const aKey = a.sort_priority === 1 ? 0 : a.manual_risk ? 1 : 2;
+      const bKey = b.sort_priority === 1 ? 0 : b.manual_risk ? 1 : 2;
+      if (aKey !== bKey) return aKey - bKey;
+      return (a.sort_priority - b.sort_priority) || a.client_name.localeCompare(b.client_name);
+    });
+
     // Filter by manager if in manager mode
     const result = req.managerName
       ? merged.filter(r => r.ads_manager === req.managerName)
@@ -782,6 +889,54 @@ app.get('/api/client/:id/history', async (req, res) => {
     `;
 
     const { rows } = await pool.query(query, [customerId]);
+
+    // Smart projection: historical pace fraction + recent average for current month
+    const now = new Date();
+    const currentDay = now.getDate();
+    if (rows.length >= 4) {
+      const paceResult = await pool.query(`
+        WITH daily AS (
+          SELECT DATE_TRUNC('month', c.start_time)::date AS month_start,
+            EXTRACT(DAY FROM c.start_time)::int AS dom,
+            normalize_phone(c.caller_phone) AS phone
+          FROM calls c
+          WHERE c.customer_id IN (SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1)
+            AND is_google_ads_call(c.source, c.source_name, c.gclid)
+            AND c.start_time >= DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '12 months'
+            AND c.start_time < DATE_TRUNC('month', CURRENT_DATE)
+        ),
+        monthly_totals AS (
+          SELECT month_start, COUNT(DISTINCT phone) AS total
+          FROM daily GROUP BY month_start HAVING COUNT(DISTINCT phone) >= 5
+        ),
+        cumulative AS (
+          SELECT d.month_start,
+            COUNT(DISTINCT d.phone) FILTER (WHERE d.dom <= $2) AS by_day,
+            mt.total
+          FROM daily d
+          JOIN monthly_totals mt ON mt.month_start = d.month_start
+          GROUP BY d.month_start, mt.total
+        )
+        SELECT CASE WHEN COUNT(*) >= 3 THEN ROUND(AVG(by_day::numeric / total), 4) ELSE NULL END AS pace_fraction
+        FROM cumulative WHERE total > 0
+      `, [customerId, currentDay]);
+
+      const paceFraction = paceResult.rows[0]?.pace_fraction ? parseFloat(paceResult.rows[0].pace_fraction) : null;
+
+      // Recent average: last 3 complete months
+      const completeMonths = rows.slice(0, -1).slice(-3);
+      const recentAvg = completeMonths.length >= 3
+        ? Math.round(completeMonths.reduce((s, r) => s + parseInt(r.quality_leads || 0), 0) / completeMonths.length)
+        : null;
+
+      // Attach to last row (current month)
+      const lastRow = rows[rows.length - 1];
+      if (lastRow) {
+        lastRow.projection_pace_fraction = paceFraction;
+        lastRow.projection_recent_avg = recentAvg;
+      }
+    }
+
     res.json(rows);
   } catch (err) {
     console.error('Client history error:', err);
@@ -1224,6 +1379,171 @@ app.get('/api/client/:id/drilldown/calendar', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Location breakdown: full per-location metrics (spend, leads, CPL, revenue, ROAS, book rate)
+app.get('/api/client/:id/drilldown/locations', async (req, res) => {
+  try {
+    if (!await guardManagerAccess(req, res)) return;
+    const customerId = req.params.id;
+    const start = req.query.start || null;
+    const end = req.query.end || null;
+
+    // Check if client has location groups
+    const { rows: groups } = await pool.query(
+      `SELECT location_name, campaign_ids FROM client_location_groups WHERE customer_id = $1 ORDER BY location_name`,
+      [customerId]
+    );
+    if (groups.length === 0) {
+      return res.json({ has_locations: false });
+    }
+
+    const dateStart = start || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const dateEnd = end || new Date().toISOString().slice(0, 10);
+
+    // Single comprehensive query: spend + leads + revenue + inspections per location
+    const { rows: locationRows } = await pool.query(`
+      WITH location_groups AS (
+        SELECT location_name, campaign_ids FROM client_location_groups WHERE customer_id = $1
+      ),
+      -- Calls attributed to campaigns via GCLID
+      campaign_calls AS (
+        SELECT gcm.campaign_id, c.callrail_id, normalize_phone(c.caller_phone) AS phone
+        FROM gclid_campaign_map gcm
+        JOIN calls c ON c.gclid = gcm.gclid AND c.customer_id = gcm.customer_id
+        WHERE gcm.customer_id = $1
+          AND c.start_time::date BETWEEN $2::date AND $3::date
+          AND is_google_ads_call(c.source, c.source_name, c.gclid)
+      ),
+      -- Forms attributed to campaigns via GCLID
+      campaign_forms AS (
+        SELECT gcm.campaign_id, fs.callrail_id,
+          COALESCE(normalize_phone(fs.customer_phone), 'form_' || fs.callrail_id) AS phone
+        FROM gclid_campaign_map gcm
+        JOIN form_submissions fs ON fs.gclid = gcm.gclid AND fs.customer_id = gcm.customer_id
+        WHERE gcm.customer_id = $1
+          AND fs.submitted_at::date BETWEEN $2::date AND $3::date
+      ),
+      -- All leads (calls + forms) per location
+      location_leads AS (
+        SELECT lg.location_name, cc.callrail_id, cc.phone
+        FROM location_groups lg
+        JOIN campaign_calls cc ON cc.campaign_id = ANY(lg.campaign_ids)
+        UNION ALL
+        SELECT lg.location_name, cf.callrail_id, cf.phone
+        FROM location_groups lg
+        JOIN campaign_forms cf ON cf.campaign_id = ANY(lg.campaign_ids)
+      ),
+      -- Lead counts per location
+      lead_counts AS (
+        SELECT location_name, COUNT(DISTINCT phone) AS leads
+        FROM location_leads GROUP BY location_name
+      ),
+      -- Revenue per location via callrail_id → v_lead_revenue
+      location_revenue AS (
+        SELECT ll.location_name,
+          SUM(COALESCE(lr.roas_revenue_cents, 0)) / 100.0 AS revenue,
+          COUNT(DISTINCT CASE WHEN lr.lead_status IN ('inspection_completed','treatment_completed','estimate_sent','estimate_approved') THEN lr.hcp_customer_id END) AS booked
+        FROM location_leads ll
+        LEFT JOIN v_lead_revenue lr ON lr.customer_id = $1 AND lr.callrail_id = ll.callrail_id
+        GROUP BY ll.location_name
+      ),
+      -- Spend per location from campaign_daily_metrics
+      location_spend AS (
+        SELECT lg.location_name, COALESCE(SUM(cdm.cost), 0) AS spend
+        FROM location_groups lg
+        LEFT JOIN campaign_daily_metrics cdm ON cdm.customer_id = $1
+          AND cdm.campaign_id = ANY(lg.campaign_ids)
+          AND cdm.date BETWEEN $2::date AND $3::date
+          AND cdm.campaign_type != 'LOCAL_SERVICES'
+        GROUP BY lg.location_name
+      ),
+      -- Other bucket (unassigned campaigns)
+      other_spend AS (
+        SELECT COALESCE(SUM(cdm.cost), 0) AS spend
+        FROM campaign_daily_metrics cdm
+        WHERE cdm.customer_id = $1
+          AND cdm.date BETWEEN $2::date AND $3::date
+          AND cdm.campaign_type != 'LOCAL_SERVICES'
+          AND NOT EXISTS (
+            SELECT 1 FROM (SELECT DISTINCT unnest(campaign_ids) AS cid FROM client_location_groups WHERE customer_id = $1) m
+            WHERE m.cid = cdm.campaign_id
+          )
+      )
+      SELECT
+        lg.location_name,
+        COALESCE(ls.spend, 0) AS spend,
+        COALESCE(lc.leads, 0) AS leads,
+        CASE WHEN COALESCE(lc.leads, 0) > 0 THEN COALESCE(ls.spend, 0) / lc.leads ELSE NULL END AS cpl,
+        COALESCE(lr.revenue, 0) AS revenue,
+        CASE WHEN COALESCE(ls.spend, 0) > 0 THEN COALESCE(lr.revenue, 0) / ls.spend ELSE NULL END AS roas,
+        COALESCE(lr.booked, 0) AS booked,
+        CASE WHEN COALESCE(lc.leads, 0) > 0 THEN ROUND(COALESCE(lr.booked, 0)::numeric / lc.leads, 3) ELSE NULL END AS book_rate
+      FROM location_groups lg
+      LEFT JOIN location_spend ls ON ls.location_name = lg.location_name
+      LEFT JOIN lead_counts lc ON lc.location_name = lg.location_name
+      LEFT JOIN location_revenue lr ON lr.location_name = lg.location_name
+      UNION ALL
+      SELECT 'Other', os.spend, 0, NULL, 0, NULL, 0, NULL
+      FROM other_spend os WHERE os.spend > 0
+    `, [customerId, dateStart, dateEnd]);
+
+    // GCLID coverage
+    const { rows: coverageRows } = await pool.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE c.gclid IS NOT NULL AND c.gclid != '') AS with_gclid,
+        COUNT(*) AS total
+      FROM calls c
+      WHERE c.customer_id = $1
+        AND c.start_time::date BETWEEN $2::date AND $3::date
+        AND is_google_ads_call(c.source, c.source_name, c.gclid)
+    `, [customerId, dateStart, dateEnd]);
+    const cov = coverageRows[0];
+    const gclidCoverage = cov.total > 0 ? parseFloat(cov.with_gclid) / parseFloat(cov.total) : 0;
+
+    // Build response
+    const locations = [];
+    let totalSpend = 0, totalLeads = 0, totalRevenue = 0, totalBooked = 0;
+    for (const r of locationRows) {
+      const loc = {
+        location_name: r.location_name,
+        spend: parseFloat(r.spend) || 0,
+        leads: parseInt(r.leads) || 0,
+        cpl: r.cpl !== null ? parseFloat(r.cpl) : null,
+        revenue: parseFloat(r.revenue) || 0,
+        roas: r.roas !== null ? parseFloat(r.roas) : null,
+        booked: parseInt(r.booked) || 0,
+        book_rate: r.book_rate !== null ? parseFloat(r.book_rate) : null
+      };
+      locations.push(loc);
+      if (r.location_name !== 'Other') {
+        totalSpend += loc.spend;
+        totalLeads += loc.leads;
+        totalRevenue += loc.revenue;
+        totalBooked += loc.booked;
+      } else {
+        totalSpend += loc.spend;
+      }
+    }
+
+    res.json({
+      has_locations: true,
+      gclid_coverage: gclidCoverage,
+      locations,
+      total: {
+        spend: totalSpend,
+        leads: totalLeads,
+        cpl: totalLeads > 0 ? totalSpend / totalLeads : null,
+        revenue: totalRevenue,
+        roas: totalSpend > 0 ? totalRevenue / totalSpend : null,
+        booked: totalBooked,
+        book_rate: totalLeads > 0 ? totalBooked / totalLeads : null
+      }
+    });
+  } catch (err) {
+    console.error('Location drilldown error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Trend comparison: current vs prior period metrics
 app.get('/api/trends', async (req, res) => {
   try {
@@ -1422,7 +1742,7 @@ app.post('/api/client/:id/budget', async (req, res) => {
         const https = require('https');
         const payload = JSON.stringify({ channel, text: msg, mrkdwn: true });
         const opts = { hostname: 'slack.com', path: '/api/chat.postMessage', method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.SLACK_BOT_TOKEN}`, 'Content-Length': Buffer.byteLength(payload) } };
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer xoxb-6594692085893-10476528834625-otlCrGN5kiu31kQYWDvrCAwC', 'Content-Length': Buffer.byteLength(payload) } };
         const r = https.request(opts, () => {});
         r.on('error', () => {});
         r.write(payload);
@@ -1439,6 +1759,23 @@ app.post('/api/client/:id/budget', async (req, res) => {
     res.json({ success: true, name: rows[0].name, budget: rows[0].budget });
   } catch (err) {
     console.error('Budget update error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Manual contact logging
+app.post('/api/client/:id/log-contact', checkAuth, async (req, res) => {
+  try {
+    const customerId = req.params.id;
+    const { type, summary, logged_by } = req.body;
+    const interactionType = type === 'call_attempt' ? 'call_attempt' : type === 'meeting' ? 'meeting' : 'call';
+    await pool.query(`
+      INSERT INTO client_interactions (customer_id, interaction_type, interaction_date, source, summary, logged_by)
+      VALUES ($1, $2, NOW(), 'manual', $3, $4)
+    `, [customerId, interactionType, summary || 'Manual log', logged_by || 'Susie']);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Log contact error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1589,15 +1926,33 @@ app.get('/api/risk-trend', async (req, res) => {
       with_prior AS (
         SELECT
           dc.*,
-          -- Sticky risk: disabled for new accounts (under 3 months) — early fluctuation is normal
-          -- For established accounts: risk if 14+ risk days, OR was risk last month and didn't recover with 14+ healthy days
-          CASE
-            WHEN months_since_start < 3 THEN risk_days >= 14
-            WHEN risk_days >= 14 THEN true
-            WHEN LAG(risk_days >= 14) OVER (PARTITION BY customer_id ORDER BY month_start)
-              AND healthy_days < 14 THEN true
-            ELSE false
+          -- For current month (< 14 days of data): use majority status (most days wins)
+          -- For past months: require 14+ days in status
+          CASE WHEN total_days < 14 THEN
+            -- Current/partial month: risk if risk_days is the plurality
+            risk_days > flag_days AND risk_days > healthy_days
+          ELSE
+            -- Sticky risk: disabled for new accounts (under 3 months)
+            CASE
+              WHEN months_since_start < 3 THEN risk_days >= 14
+              WHEN risk_days >= 14 THEN true
+              WHEN LAG(risk_days >= 14) OVER (PARTITION BY customer_id ORDER BY month_start)
+                AND healthy_days < 14 THEN true
+              ELSE false
+            END
           END AS sticky_risk,
+          CASE WHEN total_days < 14 THEN
+            -- Current/partial month: flag if flag_days is plurality and not risk
+            flag_days >= risk_days AND flag_days > healthy_days
+          ELSE
+            NOT (CASE
+              WHEN months_since_start < 3 THEN risk_days >= 14
+              WHEN risk_days >= 14 THEN true
+              WHEN LAG(risk_days >= 14) OVER (PARTITION BY customer_id ORDER BY month_start)
+                AND healthy_days < 14 THEN true
+              ELSE false
+            END) AND flag_days >= 14
+          END AS is_flag,
           CASE
             WHEN risk_days >= 14 AND healthy_days >= 14 THEN true
             ELSE false
@@ -1607,12 +1962,12 @@ app.get('/api/risk-trend', async (req, res) => {
       SELECT
         month_start AS snapshot_date,
         COUNT(*) FILTER (WHERE sticky_risk) AS ads_risk_count,
-        COUNT(*) FILTER (WHERE NOT sticky_risk AND flag_days >= 14) AS flag_count,
-        COUNT(*) FILTER (WHERE NOT sticky_risk AND flag_days < 14) AS healthy_count,
+        COUNT(*) FILTER (WHERE is_flag) AS flag_count,
+        COUNT(*) FILTER (WHERE NOT sticky_risk AND NOT is_flag) AS healthy_count,
         COUNT(*) AS total,
         COALESCE(ARRAY_AGG(client_name ORDER BY client_name) FILTER (WHERE sticky_risk), '{}') AS ads_risk_clients,
-        COALESCE(ARRAY_AGG(client_name ORDER BY client_name) FILTER (WHERE NOT sticky_risk AND flag_days >= 14), '{}') AS flag_clients,
-        COALESCE(ARRAY_AGG(client_name ORDER BY client_name) FILTER (WHERE NOT sticky_risk AND flag_days < 14), '{}') AS healthy_clients,
+        COALESCE(ARRAY_AGG(client_name ORDER BY client_name) FILTER (WHERE is_flag), '{}') AS flag_clients,
+        COALESCE(ARRAY_AGG(client_name ORDER BY client_name) FILTER (WHERE NOT sticky_risk AND NOT is_flag), '{}') AS healthy_clients,
         COALESCE(ARRAY_AGG(client_name ORDER BY client_name) FILTER (WHERE sticky_risk AND recovered), '{}') AS recovered_clients
       FROM with_prior
       GROUP BY month_start
@@ -1783,6 +2138,70 @@ app.post('/api/admin/generate-manager-token', async (req, res) => {
     _managerTokens = null; // bust cache
     res.json({ ads_manager, token, url: `/m/${token}` });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Cohort Performance ───────────────────────────────────────
+
+app.get('/api/cohort', checkAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM get_cohort_metrics()');
+
+    // Build seasonal index from campaign_daily_metrics
+    const { rows: seasonalRows } = await pool.query(`
+      WITH monthly AS (
+        SELECT EXTRACT(MONTH FROM date)::int AS cal_month, customer_id,
+          SUM(clicks) AS clicks, COUNT(DISTINCT date) AS days
+        FROM campaign_daily_metrics WHERE date >= '2024-09-01'
+        GROUP BY 1, 2
+      )
+      SELECT cal_month, ROUND(AVG(clicks / NULLIF(days, 0)::numeric), 1) AS avg_clicks
+      FROM monthly WHERE clicks > 0
+      GROUP BY cal_month ORDER BY cal_month
+    `);
+
+    const seasonalRaw = {};
+    seasonalRows.forEach(r => { seasonalRaw[r.cal_month] = parseFloat(r.avg_clicks); });
+    const annualAvg = Object.values(seasonalRaw).reduce((a, b) => a + b, 0) / 12;
+    const seasonalIndex = {};
+    for (let m = 1; m <= 12; m++) {
+      seasonalIndex[m] = seasonalRaw[m] ? +(seasonalRaw[m] / annualAvg).toFixed(3) : 1;
+    }
+
+    // Group by client
+    const clients = {};
+    rows.forEach(r => {
+      const id = String(r.customer_id);
+      if (!clients[id]) {
+        clients[id] = {
+          customer_id: id,
+          name: r.client_name,
+          start_date: r.start_date,
+          months: []
+        };
+      }
+      clients[id].months.push({
+        program_month: r.program_month,
+        month_start: r.month_start,
+        month_end: r.month_end,
+        cal_month: r.cal_month,
+        contacts: r.contacts,
+        quality_leads: r.quality_leads,
+        ad_spend: parseFloat(r.ad_spend) || 0,
+        revenue: parseInt(r.revenue_cents) / 100,
+        rev_per_lead: parseFloat(r.rev_per_lead) || 0,
+        cpl: parseFloat(r.cpl) || 0,
+        seasonal_index: seasonalIndex[r.cal_month] || 1,
+        quality_leads_adjusted: seasonalIndex[r.cal_month]
+          ? Math.round(r.quality_leads / seasonalIndex[r.cal_month])
+          : r.quality_leads
+      });
+    });
+
+    res.json({ clients: Object.values(clients), seasonal_index: seasonalIndex });
+  } catch (err) {
+    console.error('Cohort error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── Start ─────────────────────────────────────────────────────

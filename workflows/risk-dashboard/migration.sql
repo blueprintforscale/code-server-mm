@@ -340,10 +340,12 @@ call_metrics AS (
        WHERE (fs.gclid IS NOT NULL OR fs.source = 'Google Ads'))
     ))::INT AS days_since_lead,
     -- Answer rate: first-time GA callers during business hours only
+    -- Excludes abandoned calls (hung up <10s before anyone could answer) from denominator
     COUNT(*) FILTER (
       WHERE ca.start_time::date BETWEEN p_start AND p_end
         AND is_google_ads_call(ca.source, ca.source_name, ca.gclid)
         AND ca.first_call = true
+        AND COALESCE(ca.classified_status, CASE WHEN ca.answered THEN 'answered' ELSE 'missed' END) != 'abandoned'
         AND EXTRACT(DOW FROM (ca.start_time AT TIME ZONE COALESCE(cb.timezone, 'America/New_York')))::INT
             = ANY(COALESCE(cb.biz_days, ARRAY[1,2,3,4,5]))
         AND (ca.start_time AT TIME ZONE COALESCE(cb.timezone, 'America/New_York'))::time
@@ -354,7 +356,7 @@ call_metrics AS (
       WHERE ca.start_time::date BETWEEN p_start AND p_end
         AND is_google_ads_call(ca.source, ca.source_name, ca.gclid)
         AND ca.first_call = true
-        AND ca.answered = true
+        AND COALESCE(ca.classified_status, CASE WHEN ca.answered THEN 'answered' ELSE 'missed' END) = 'answered'
         AND EXTRACT(DOW FROM (ca.start_time AT TIME ZONE COALESCE(cb.timezone, 'America/New_York')))::INT
             = ANY(COALESCE(cb.biz_days, ARRAY[1,2,3,4,5]))
         AND (ca.start_time AT TIME ZONE COALESCE(cb.timezone, 'America/New_York'))::time
@@ -942,7 +944,8 @@ CREATE OR REPLACE FUNCTION compute_risk_status(
   p_trailing_6mo_roas  NUMERIC DEFAULT 0,
   p_trailing_6mo_potential_roas NUMERIC DEFAULT 0,
   p_trailing_3mo_roas  NUMERIC DEFAULT 0,
-  p_trailing_3mo_potential_roas NUMERIC DEFAULT 0
+  p_trailing_3mo_potential_roas NUMERIC DEFAULT 0,
+  p_current_confirmed_status TEXT DEFAULT NULL
 )
 RETURNS TABLE (
   status        TEXT,
@@ -1035,41 +1038,62 @@ BEGIN
       format('$0 spend with $%s budget', ROUND(p_budget)));
   END IF;
 
-  IF p_months_in_program BETWEEN 3 AND 5 AND p_quality_leads <= 10 THEN
+  -- Lead count: hysteresis — entry <=10, exit requires >=15 (months 3-5)
+  IF p_months_in_program BETWEEN 3 AND 5
+    AND p_quality_leads <= (CASE WHEN p_current_confirmed_status = 'Risk' THEN 14 ELSE 10 END) THEN
     v_ads_risks := array_append(v_ads_risks,
-      format('%s leads (<=10, months 3-5)', p_quality_leads));
+      format('%s leads (<=%s, months 3-5)', p_quality_leads,
+        CASE WHEN p_current_confirmed_status = 'Risk' THEN 14 ELSE 10 END));
   END IF;
 
-  IF p_months_in_program >= 6 AND p_quality_leads < 20 AND p_budget >= 3000 THEN
+  -- Lead count: hysteresis — entry <20, exit requires >=25 (months 6+)
+  IF p_months_in_program >= 6
+    AND p_quality_leads < (CASE WHEN p_current_confirmed_status = 'Risk' THEN 25 ELSE 20 END)
+    AND p_budget >= 3000 THEN
     v_ads_risks := array_append(v_ads_risks,
-      format('%s leads (<20, budget $%s)', p_quality_leads, ROUND(p_budget)));
+      format('%s leads (<%s, budget $%s)', p_quality_leads,
+        CASE WHEN p_current_confirmed_status = 'Risk' THEN 25 ELSE 20 END, ROUND(p_budget)));
   END IF;
 
-  -- High CPL: risk at >$170, but downgraded to flag if ROAS > 3x (profitable despite high CPL)
-  IF p_cpl > 170 AND (p_roas <= 3 OR p_field_mgmt NOT IN ('housecall_pro', 'jobber', 'ghl')) THEN
-    v_ads_risks := array_append(v_ads_risks, format('CPL $%s (>$170)', ROUND(p_cpl)));
-  ELSIF p_cpl > 170 AND p_roas > 3 THEN
-    v_flags := array_append(v_flags, format('CPL $%s (>$170 but ROAS %sx overrides)', ROUND(p_cpl), ROUND(p_roas, 2)));
-  END IF;
-
-  -- Lead volume drop >30%: risk only if CPL is also unhealthy (>$140).
-  -- If CPL is healthy, the ads are still efficient — volume dip is flagged, not risk.
-  IF p_lead_volume_change IS NOT NULL AND p_lead_volume_change < -0.3 THEN
-    IF p_cpl > 140 THEN
-      v_ads_risks := array_append(v_ads_risks,
-        format('Lead volume %s%% (>30%% drop)', ROUND(p_lead_volume_change * 100)));
-    ELSE
-      v_flags := array_append(v_flags,
-        format('Lead volume %s%% (>30%% drop, CPL $%s healthy)', ROUND(p_lead_volume_change * 100), ROUND(p_cpl)));
+  -- High CPL: risk at >$170, exit requires <=$150 (hysteresis buffer)
+  -- Downgraded to flag if ROAS > 3x (profitable despite high CPL)
+  DECLARE
+    v_cpl_thresh NUMERIC := CASE WHEN p_current_confirmed_status = 'Risk' THEN 150 ELSE 170 END;
+  BEGIN
+    IF p_cpl > v_cpl_thresh AND (p_roas <= 3 OR p_field_mgmt NOT IN ('housecall_pro', 'jobber', 'ghl')) THEN
+      v_ads_risks := array_append(v_ads_risks, format('CPL $%s (>$%s)', ROUND(p_cpl), v_cpl_thresh));
+    ELSIF p_cpl > v_cpl_thresh AND p_roas > 3 THEN
+      v_flags := array_append(v_flags, format('CPL $%s (>$%s but ROAS %sx overrides)', ROUND(p_cpl), v_cpl_thresh, ROUND(p_roas, 2)));
     END IF;
-  END IF;
+  END;
 
-  -- Days since lead: months 4+ = risk at 7+, months 1-3 = risk at 10+
+  -- Lead volume drop: hysteresis — entry >30% drop, exit requires recovery to <=20% drop
+  -- Risk only if CPL is also unhealthy (>$150). Healthy CPL → flag instead.
+  DECLARE
+    v_vol_thresh NUMERIC := CASE WHEN p_current_confirmed_status = 'Risk' THEN -0.2 ELSE -0.3 END;
+  BEGIN
+    IF p_lead_volume_change IS NOT NULL AND p_lead_volume_change < v_vol_thresh THEN
+      IF p_cpl > 150 THEN
+        v_ads_risks := array_append(v_ads_risks,
+          format('Lead volume %s%% (>%s%% drop)', ROUND(p_lead_volume_change * 100), ROUND(ABS(v_vol_thresh) * 100)));
+      ELSE
+        v_flags := array_append(v_flags,
+          format('Lead volume %s%% (>%s%% drop, CPL $%s healthy)', ROUND(p_lead_volume_change * 100), ROUND(ABS(v_vol_thresh) * 100), ROUND(p_cpl)));
+      END IF;
+    END IF;
+  END;
+
+  -- Days since lead: hysteresis — entry >=7 (months 4+), exit requires <=4
+  -- Early program: entry >10, exit requires <=7
   IF p_days_since_lead IS NOT NULL THEN
-    IF p_months_in_program >= 4 AND p_days_since_lead >= 7 THEN
-      v_ads_risks := array_append(v_ads_risks, format('%s days since last lead (>=7)', p_days_since_lead));
-    ELSIF p_months_in_program <= 3 AND p_days_since_lead > 10 THEN
-      v_ads_risks := array_append(v_ads_risks, format('%s days since last lead (>10, early program)', p_days_since_lead));
+    IF p_months_in_program >= 4
+      AND p_days_since_lead >= (CASE WHEN p_current_confirmed_status = 'Risk' THEN 5 ELSE 7 END) THEN
+      v_ads_risks := array_append(v_ads_risks, format('%s days since last lead (>=%s)',
+        p_days_since_lead, CASE WHEN p_current_confirmed_status = 'Risk' THEN 5 ELSE 7 END));
+    ELSIF p_months_in_program <= 3
+      AND p_days_since_lead > (CASE WHEN p_current_confirmed_status = 'Risk' THEN 7 ELSE 10 END) THEN
+      v_ads_risks := array_append(v_ads_risks, format('%s days since last lead (>%s, early program)',
+        p_days_since_lead, CASE WHEN p_current_confirmed_status = 'Risk' THEN 7 ELSE 10 END));
     END IF;
   END IF;
 
@@ -1104,15 +1128,16 @@ BEGIN
       v_rampup_threshold NUMERIC;
     BEGIN
       -- Thresholds scale with program maturity
+      -- Hysteresis: exit thresholds 0.5x lower than entry
       IF p_months_in_program BETWEEN 5 AND 6 THEN
-        v_lifetime_threshold := 1.5;
-        v_rampup_threshold := 2.0;
+        v_lifetime_threshold := CASE WHEN p_current_confirmed_status = 'Risk' THEN 1.0 ELSE 1.5 END;
+        v_rampup_threshold := CASE WHEN p_current_confirmed_status = 'Risk' THEN 1.5 ELSE 2.0 END;
       ELSIF p_months_in_program BETWEEN 7 AND 9 THEN
-        v_lifetime_threshold := 2.0;
-        v_rampup_threshold := 2.5;
+        v_lifetime_threshold := CASE WHEN p_current_confirmed_status = 'Risk' THEN 1.5 ELSE 2.0 END;
+        v_rampup_threshold := CASE WHEN p_current_confirmed_status = 'Risk' THEN 2.0 ELSE 2.5 END;
       ELSE -- months 10-12+
-        v_lifetime_threshold := 2.5;
-        v_rampup_threshold := 3.0;
+        v_lifetime_threshold := CASE WHEN p_current_confirmed_status = 'Risk' THEN 2.0 ELSE 2.5 END;
+        v_rampup_threshold := CASE WHEN p_current_confirmed_status = 'Risk' THEN 2.5 ELSE 3.0 END;
       END IF;
 
       v_lifetime_ok := p_guarantee >= v_lifetime_threshold;
@@ -1247,6 +1272,20 @@ $$;
 
 
 -- ============================================================
+-- Sticky Status table (must exist before get_dashboard_with_risk references it)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS client_confirmed_status (
+  customer_id         BIGINT PRIMARY KEY REFERENCES clients(customer_id),
+  confirmed_status    TEXT NOT NULL DEFAULT 'Healthy',
+  confirmed_risk_type TEXT DEFAULT '',
+  pending_status      TEXT,
+  pending_streak      INT DEFAULT 0,
+  last_computed       TEXT,
+  confirmed_at        DATE,
+  updated_at          TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================
 -- 1C. get_dashboard_with_risk(p_start, p_end)
 -- ============================================================
 
@@ -1328,13 +1367,15 @@ SELECT
        WHEN m.risk_override = 'risk' THEN 1
        ELSE r.sort_priority END AS sort_priority
 FROM get_dashboard_metrics(p_start, p_end) m
+LEFT JOIN client_confirmed_status ccs ON ccs.customer_id = m.customer_id
 CROSS JOIN LATERAL compute_risk_status(
   m.months_in_program, m.actual_quality_leads, m.cpl, m.lead_volume_change,
   m.days_since_lead, m.insp_booked_pct, m.roas, m.guarantee,
   m.spam_rate, m.abandoned_rate, m.budget, m.ad_spend,
   m.inspection_type, m.on_cal_14d, m.call_answer_rate, m.field_mgmt,
   m.prior_cpl, m.trailing_6mo_roas, m.trailing_6mo_potential_roas,
-  m.trailing_3mo_roas, m.trailing_3mo_potential_roas
+  m.trailing_3mo_roas, m.trailing_3mo_potential_roas,
+  ccs.confirmed_status
 ) r
 ORDER BY
   CASE WHEN m.risk_override = 'healthy' THEN 5
@@ -1420,3 +1461,156 @@ BEGIN
   END LOOP;
 END;
 $$;
+
+
+-- ============================================================
+-- 2. Sticky Status: Anti-Flapping System
+-- ============================================================
+
+-- Add audit columns to snapshots
+ALTER TABLE risk_status_snapshots
+  ADD COLUMN IF NOT EXISTS confirmed_status TEXT,
+  ADD COLUMN IF NOT EXISTS pending_status TEXT;
+
+-- Backfill: seed confirmed status from latest snapshot for each client
+INSERT INTO client_confirmed_status (customer_id, confirmed_status, confirmed_risk_type, last_computed, confirmed_at)
+SELECT DISTINCT ON (customer_id)
+  customer_id, status, COALESCE(risk_type, ''), status, snapshot_date
+FROM risk_status_snapshots
+ORDER BY customer_id, snapshot_date DESC
+ON CONFLICT (customer_id) DO NOTHING;
+
+
+-- ============================================================
+-- 2A. update_confirmed_statuses()
+-- Called daily after snapshot. Implements 3-day confirmation period.
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION update_confirmed_statuses()
+RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  rec RECORD;
+  v_computed_status TEXT;
+  v_computed_risk_type TEXT;
+  v_confirmation_days INT;
+  v_current_confirmed TEXT;
+BEGIN
+  FOR rec IN SELECT * FROM get_dashboard_with_risk() LOOP
+    v_computed_status := rec.status;
+    v_computed_risk_type := COALESCE(rec.risk_type, '');
+
+    -- Asymmetric confirmation: worsening is fast, improving is slow
+    -- Look up current confirmed status for this client
+    SELECT confirmed_status INTO v_current_confirmed
+    FROM client_confirmed_status WHERE customer_id = rec.customer_id;
+
+    v_confirmation_days := CASE
+      -- Into Risk: instant (1 day) — never miss a risk signal
+      WHEN v_computed_status = 'Risk' THEN 1
+      -- Into Flag from Healthy: 2 days — slight buffer for flags
+      WHEN v_computed_status = 'Flag' AND COALESCE(v_current_confirmed, 'Healthy') = 'Healthy' THEN 2
+      -- Risk → Flag (partial improvement): 3 days
+      WHEN v_computed_status = 'Flag' AND v_current_confirmed = 'Risk' THEN 3
+      -- Flag → Healthy: 3 days
+      WHEN v_computed_status = 'Healthy' AND v_current_confirmed = 'Flag' THEN 3
+      -- Risk → Healthy: 5 days — must really prove recovery
+      WHEN v_computed_status = 'Healthy' AND v_current_confirmed = 'Risk' THEN 5
+      -- Default
+      ELSE 3
+    END;
+
+    -- Skip clients with manual risk_override (override always wins)
+    IF EXISTS (SELECT 1 FROM clients c WHERE c.customer_id = rec.customer_id AND c.risk_override IS NOT NULL) THEN
+      INSERT INTO client_confirmed_status (customer_id, confirmed_status, confirmed_risk_type, last_computed, confirmed_at, updated_at)
+      VALUES (rec.customer_id, v_computed_status, v_computed_risk_type, v_computed_status, CURRENT_DATE, NOW())
+      ON CONFLICT (customer_id) DO UPDATE SET
+        confirmed_status = v_computed_status,
+        confirmed_risk_type = v_computed_risk_type,
+        last_computed = v_computed_status,
+        pending_status = NULL,
+        pending_streak = 0,
+        updated_at = NOW();
+      CONTINUE;
+    END IF;
+
+    INSERT INTO client_confirmed_status (customer_id, confirmed_status, confirmed_risk_type, last_computed, confirmed_at, updated_at)
+    VALUES (rec.customer_id, v_computed_status, v_computed_risk_type, v_computed_status, CURRENT_DATE, NOW())
+    ON CONFLICT (customer_id) DO UPDATE SET
+      last_computed = v_computed_status,
+
+      -- Pending streak logic
+      pending_status = CASE
+        -- Computed matches confirmed: no change pending
+        WHEN v_computed_status = client_confirmed_status.confirmed_status THEN NULL
+        -- Computed matches existing pending: keep pending (streak incremented below)
+        WHEN v_computed_status = client_confirmed_status.pending_status THEN client_confirmed_status.pending_status
+        -- New direction: start fresh pending
+        ELSE v_computed_status
+      END,
+
+      pending_streak = CASE
+        WHEN v_computed_status = client_confirmed_status.confirmed_status THEN 0
+        WHEN v_computed_status = client_confirmed_status.pending_status
+          THEN client_confirmed_status.pending_streak + 1
+        ELSE 1
+      END,
+
+      -- Promote to confirmed when streak reaches threshold
+      confirmed_status = CASE
+        WHEN v_computed_status = client_confirmed_status.pending_status
+          AND client_confirmed_status.pending_streak + 1 >= v_confirmation_days
+          THEN v_computed_status
+        ELSE client_confirmed_status.confirmed_status
+      END,
+
+      confirmed_risk_type = CASE
+        WHEN v_computed_status = client_confirmed_status.pending_status
+          AND client_confirmed_status.pending_streak + 1 >= v_confirmation_days
+          THEN v_computed_risk_type
+        ELSE client_confirmed_status.confirmed_risk_type
+      END,
+
+      confirmed_at = CASE
+        WHEN v_computed_status = client_confirmed_status.pending_status
+          AND client_confirmed_status.pending_streak + 1 >= v_confirmation_days
+          THEN CURRENT_DATE
+        ELSE client_confirmed_status.confirmed_at
+      END,
+
+      updated_at = NOW();
+
+    -- After promotion, clear pending fields
+    UPDATE client_confirmed_status
+    SET pending_status = NULL, pending_streak = 0
+    WHERE customer_id = rec.customer_id
+      AND confirmed_status = pending_status;
+  END LOOP;
+END;
+$$;
+
+
+-- ============================================================
+-- 3. Location Groups: Per-location campaign breakdown
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS client_location_groups (
+    id              SERIAL PRIMARY KEY,
+    customer_id     BIGINT NOT NULL REFERENCES clients(customer_id),
+    location_name   TEXT NOT NULL,
+    campaign_ids    BIGINT[] NOT NULL,
+    UNIQUE(customer_id, location_name)
+);
+CREATE INDEX IF NOT EXISTS idx_clg_customer ON client_location_groups(customer_id);
+
+-- Seed: Nez Iskandrani (9159518133)
+INSERT INTO client_location_groups (customer_id, location_name, campaign_ids) VALUES
+  (9159518133, 'Kansas', ARRAY[22519823667, 22196078601, 22813387593, 21843386860, 21785289528, 22206386584]),
+  (9159518133, 'Wichita', ARRAY[23582949346])
+ON CONFLICT (customer_id, location_name) DO UPDATE SET campaign_ids = EXCLUDED.campaign_ids;
+
+-- Seed: Aaron Meadows (9699974772)
+INSERT INTO client_location_groups (customer_id, location_name, campaign_ids) VALUES
+  (9699974772, 'NorCal', ARRAY[22713487088, 22886232871, 23217100260, 21587855410]),
+  (9699974772, 'Marin County', ARRAY[22933413981]),
+  (9699974772, 'Santa Clara County', ARRAY[23628998285])
+ON CONFLICT (customer_id, location_name) DO UPDATE SET campaign_ids = EXCLUDED.campaign_ids;

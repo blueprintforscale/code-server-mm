@@ -170,10 +170,16 @@
           WHERE (eg.hcp_customer_id = ANY (lb.all_ids)) AND eg.status = 'approved'::text AND eg.count_revenue AND eg.estimate_type = 'treatment'::text AND eg.approved_total_cents >= 100000 AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR eg.sent_at >= lb.first_ga_touch_time))) AS has_estimate_approved,
     (EXISTS ( SELECT 1
            FROM hcp_jobs j
-          WHERE (j.hcp_customer_id = ANY (lb.all_ids)) AND j.record_status = 'active'::text AND (j.status = ANY (ARRAY['scheduled'::text, 'complete rated'::text, 'complete unrated'::text, 'in progress'::text])) AND j.total_amount_cents >= 100000 AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR COALESCE(j.scheduled_at, j.hcp_created_at) >= lb.first_ga_touch_time))) AS has_job_scheduled,
+          WHERE (j.hcp_customer_id = ANY (lb.all_ids)) AND j.record_status = 'active'::text AND j.work_category = 'treatment'::text AND (j.status = ANY (ARRAY['scheduled'::text, 'complete rated'::text, 'complete unrated'::text, 'in progress'::text])) AND j.total_amount_cents >= 100000 AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR COALESCE(j.scheduled_at, j.hcp_created_at) >= lb.first_ga_touch_time))
+     OR EXISTS ( SELECT 1
+           FROM v_estimate_groups eg
+          WHERE (eg.hcp_customer_id = ANY (lb.all_ids)) AND eg.status = 'approved'::text AND eg.count_revenue AND eg.estimate_type = 'treatment'::text AND eg.approved_total_cents >= 100000 AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR eg.sent_at >= lb.first_ga_touch_time))) AS has_job_scheduled,
     (EXISTS ( SELECT 1
            FROM hcp_jobs j
-          WHERE (j.hcp_customer_id = ANY (lb.all_ids)) AND j.record_status = 'active'::text AND (j.status = ANY (ARRAY['complete rated'::text, 'complete unrated'::text])) AND j.total_amount_cents >= 100000 AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR COALESCE(j.scheduled_at, j.hcp_created_at) >= lb.first_ga_touch_time))) AS has_job_completed,
+          WHERE (j.hcp_customer_id = ANY (lb.all_ids)) AND j.record_status = 'active'::text AND j.work_category = 'treatment'::text AND (j.status = ANY (ARRAY['complete rated'::text, 'complete unrated'::text])) AND j.total_amount_cents >= 100000 AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR COALESCE(j.scheduled_at, j.hcp_created_at) >= lb.first_ga_touch_time))
+     OR EXISTS ( SELECT 1
+           FROM hcp_invoices inv
+          WHERE (inv.hcp_customer_id = ANY (lb.all_ids)) AND (inv.status <> ALL (ARRAY['canceled'::text, 'voided'::text])) AND inv.amount_cents > 0 AND inv.invoice_type = 'treatment'::text AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR inv.created_at >= lb.first_ga_touch_time))) AS has_job_completed,
     (EXISTS ( SELECT 1
            FROM hcp_invoices inv
           WHERE (inv.hcp_customer_id = ANY (lb.all_ids)) AND (inv.status <> ALL (ARRAY['canceled'::text, 'voided'::text])) AND inv.amount_cents > 0 AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR inv.created_at >= lb.first_ga_touch_time))) OR (EXISTS ( SELECT 1

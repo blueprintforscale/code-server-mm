@@ -26,6 +26,8 @@ from urllib.parse import urlencode
 import psycopg2
 from psycopg2.extras import execute_values
 
+from classifier import classify_job, classify_invoice, classify_estimate
+
 # ============================================================
 # Config
 # ============================================================
@@ -382,24 +384,47 @@ def upsert_estimate(cur, customer_id, hcp_customer_id, est):
         emp_name = emp.get('name') or f"{emp.get('first_name', '')} {emp.get('last_name', '')}".strip()
         emp_id = emp.get('id')
 
-    # Classify estimate: inspection (testing/sampling < $1000) vs treatment
-    estimate_type = 'treatment'
-    if highest_option_cents > 0 and highest_option_cents < 100000:
-        estimate_type = 'inspection'
-    elif highest_option_cents == 0:
-        estimate_type = 'unknown'  # No amount — can't classify by price
+    # Build option dicts for classify_estimate
+    _est_option_dicts = []
+    for _opt in options:
+        _amt = _opt.get('total_amount', 0) or _opt.get('total_amount_cents', 0) or _opt.get('amount', 0) or 0
+        if isinstance(_amt, float) and _amt > 0 and _amt < 100000:
+            _amt = int(_amt * 100)
+        _est_option_dicts.append({
+            'name': _opt.get('name') or _opt.get('label'),
+            'total_cents': _amt,
+            'tags': extract_tags(_opt.get('tags')),
+            'message_from_pro': (_opt.get('message_from_pro') or '').strip() or None,
+            'status': _opt.get('status'),
+            'approval_status': _opt.get('approval_status'),
+        })
+    _est_class = classify_estimate(
+        options=_est_option_dicts,
+        status=est_status,
+        linked_job_category=None,  # jobs pulled after estimates; backfill re-applies
+        fallback_highest_option_cents=highest_option_cents,
+    )
+    # Write to legacy estimate_type for v_estimate_groups; fall back to 'treatment'
+    # for canceled/unknown so existing consumers don't break.
+    estimate_type = (
+        _est_class['category']
+        if _est_class['category'] in ('treatment', 'inspection')
+        else 'treatment'
+    )
 
     cur.execute("""
         INSERT INTO hcp_estimates (
             hcp_estimate_id, customer_id, hcp_customer_id,
             status, sent_at, approved_at, hcp_created_at,
             highest_option_cents, approved_total_cents,
-            employee_name, employee_id, estimate_type, service_address
+            employee_name, employee_id, estimate_type, service_address,
+            work_category, review_needed, review_reason, classifier_signal, classified_at
         ) VALUES (
             %(est_id)s, %(cust_id)s, %(hcp_cust_id)s,
             %(status)s, %(sent_at)s, %(approved_at)s, %(created_at)s,
             %(highest)s, %(approved)s,
-            %(emp_name)s, %(emp_id)s, %(est_type)s, %(addr)s
+            %(emp_name)s, %(emp_id)s, %(est_type)s, %(addr)s,
+            %(work_category)s, %(review_needed)s, %(review_reason)s, %(classifier_signal)s, NOW()
         )
         ON CONFLICT (hcp_estimate_id) DO UPDATE SET
             status = EXCLUDED.status,
@@ -411,6 +436,11 @@ def upsert_estimate(cur, customer_id, hcp_customer_id, est):
             employee_id = EXCLUDED.employee_id,
             estimate_type = EXCLUDED.estimate_type,
             service_address = EXCLUDED.service_address,
+            work_category = EXCLUDED.work_category,
+            review_needed = EXCLUDED.review_needed,
+            review_reason = EXCLUDED.review_reason,
+            classifier_signal = EXCLUDED.classifier_signal,
+            classified_at = NOW(),
             updated_at = NOW()
     """, {
         'est_id': estimate_id,
@@ -425,6 +455,10 @@ def upsert_estimate(cur, customer_id, hcp_customer_id, est):
         'emp_name': emp_name or None,
         'emp_id': emp_id,
         'est_type': estimate_type,
+        'work_category': _est_class['category'],
+        'review_needed': _est_class['review_needed'],
+        'review_reason': _est_class['review_reason'],
+        'classifier_signal': _est_class['signal'],
         'addr': extract_address(est.get('address')),
     })
 
@@ -439,10 +473,12 @@ def upsert_estimate(cur, customer_id, hcp_customer_id, est):
             INSERT INTO hcp_estimate_options (
                 hcp_estimate_id, option_number, name,
                 total_amount_cents, status, approval_status,
-                notes, message_from_pro
+                notes, message_from_pro,
+                hcp_option_id, tags
             ) VALUES (
                 %(est_id)s, %(num)s, %(name)s, %(amt)s, %(status)s,
-                %(approval)s, %(notes)s, %(msg)s
+                %(approval)s, %(notes)s, %(msg)s,
+                %(hcp_option_id)s, %(tags)s
             )
             ON CONFLICT (hcp_estimate_id, option_number) DO UPDATE SET
                 name = EXCLUDED.name,
@@ -451,6 +487,8 @@ def upsert_estimate(cur, customer_id, hcp_customer_id, est):
                 approval_status = EXCLUDED.approval_status,
                 notes = EXCLUDED.notes,
                 message_from_pro = EXCLUDED.message_from_pro,
+                hcp_option_id = EXCLUDED.hcp_option_id,
+                tags = EXCLUDED.tags,
                 updated_at = NOW()
         """, {
             'est_id': estimate_id,
@@ -461,12 +499,52 @@ def upsert_estimate(cur, customer_id, hcp_customer_id, est):
             'approval': opt.get('approval_status'),
             'notes': concat_notes(opt.get('notes')),
             'msg': (opt.get('message_from_pro') or '').strip() or None,
+            'hcp_option_id': opt.get('id'),  # the est_xxx ID that jobs reference
+            'tags': extract_tags(opt.get('tags')),
         })
 
 
 def upsert_job(cur, customer_id, hcp_customer_id, job):
     """Upsert an HCP job record (parent jobs only — segments go to hcp_job_segments)."""
     invoice_number = job.get('invoice_number') or ''
+
+    # Classify this job (treatment/inspection/canceled/unknown) using the
+    # classifier module so it gets the right work_category at ingest time.
+    _job_desc = job.get('description')
+    _job_tags = extract_tags(job.get('tags'))
+    _job_custom_type = ((job.get('job_fields') or {}).get('job_type') or {}).get('name')
+    _job_amount = job.get('total_amount_cents', 0) or job.get('total_amount', 0) or 0
+    _job_status = job.get('work_status', 'scheduled')
+    # Look up linked estimate option (if job was created from an estimate).
+    # Estimates are pulled BEFORE jobs so the option row exists by now.
+    _linked_option = None
+    _orig_est_id = job.get('original_estimate_id')
+    if _orig_est_id:
+        cur.execute(
+            """SELECT name, total_amount_cents, tags, message_from_pro, status
+               FROM hcp_estimate_options WHERE hcp_option_id = %s LIMIT 1""",
+            [_orig_est_id],
+        )
+        _opt_row = cur.fetchone()
+        if _opt_row:
+            _linked_option = {
+                'name': _opt_row[0],
+                'total_cents': _opt_row[1] or 0,
+                'tags': _opt_row[2] or [],
+                'message_from_pro': _opt_row[3],
+                'status': _opt_row[4],
+            }
+    _classification = classify_job(
+        description=_job_desc,
+        tags=_job_tags,
+        hcp_job_type=_job_custom_type,
+        line_items=None,  # line item pull comes later
+        total_cents=_job_amount,
+        status=_job_status,
+        parent_job_classification=None,  # parent inheritance handled post-grouping
+        linked_estimate=None,
+        linked_option=_linked_option,
+    )
 
     cur.execute("""
         INSERT INTO hcp_jobs (
@@ -475,14 +553,16 @@ def upsert_job(cur, customer_id, hcp_customer_id, job):
             original_estimate_id,
             status, scheduled_at, completed_at, hcp_created_at,
             employee_name, employee_id, notes, tags, service_address,
-            job_type
+            job_type,
+            work_category, review_needed, review_reason, classifier_signal, classified_at
         ) VALUES (
             %(job_id)s, %(cust_id)s, %(hcp_cust_id)s,
             %(desc)s, %(invoice)s, %(amount)s,
             %(est_id)s,
             %(status)s, %(scheduled)s, %(completed)s, %(created)s,
             %(emp_name)s, %(emp_id)s, %(notes)s, %(tags)s, %(addr)s,
-            %(job_type)s
+            %(job_type)s,
+            %(work_category)s, %(review_needed)s, %(review_reason)s, %(classifier_signal)s, NOW()
         )
         ON CONFLICT (hcp_job_id) DO UPDATE SET
             description = EXCLUDED.description,
@@ -498,25 +578,34 @@ def upsert_job(cur, customer_id, hcp_customer_id, job):
             tags = EXCLUDED.tags,
             service_address = EXCLUDED.service_address,
             job_type = EXCLUDED.job_type,
+            work_category = EXCLUDED.work_category,
+            review_needed = EXCLUDED.review_needed,
+            review_reason = EXCLUDED.review_reason,
+            classifier_signal = EXCLUDED.classifier_signal,
+            classified_at = NOW(),
             updated_at = NOW()
     """, {
         'job_id': job.get('id'),
         'cust_id': customer_id,
         'hcp_cust_id': hcp_customer_id,
-        'desc': job.get('description'),
+        'desc': _job_desc,
         'invoice': invoice_number or None,
-        'amount': job.get('total_amount_cents', 0) or job.get('total_amount', 0) or 0,
+        'amount': _job_amount,
         'est_id': job.get('original_estimate_id'),
-        'status': job.get('work_status', 'scheduled'),
+        'status': _job_status,
         'scheduled': job.get('schedule', {}).get('scheduled_start') if isinstance(job.get('schedule'), dict) else job.get('scheduled_start'),
         'completed': (job.get('work_timestamps') or {}).get('completed_at') or job.get('completed_at'),
         'created': job.get('created_at'),
         'emp_name': None,
         'emp_id': None,
         'notes': concat_notes(job.get('notes')),
-        'tags': extract_tags(job.get('tags')),
+        'tags': _job_tags,
         'addr': extract_address(job.get('address')),
-        'job_type': ((job.get('job_fields') or {}).get('job_type') or {}).get('name'),
+        'job_type': _job_custom_type,
+        'work_category': _classification['category'],
+        'review_needed': _classification['review_needed'],
+        'review_reason': _classification['review_reason'],
+        'classifier_signal': _classification['signal'],
     })
 
     # Try to set employee from assigned_employee
@@ -628,6 +717,37 @@ def upsert_invoice(cur, customer_id, inv):
         payment_method = payments[0].get('category') or payments[0].get('payment_method')
         payment_note = payments[0].get('note')
 
+    # Build line items for classifier — HCP returns them on the invoice dict.
+    # Shape matches classify_invoice's expected format (name, amount_cents).
+    _inv_line_items = [
+        {'name': it.get('name'), 'amount_cents': it.get('amount', 0) or 0}
+        for it in (inv.get('items', []) or [])
+    ]
+    # Look up linked job's work_category for the fallback signal
+    _linked_job_cat = None
+    if hcp_job_id:
+        cur.execute(
+            "SELECT work_category FROM hcp_jobs WHERE hcp_job_id = %s",
+            [hcp_job_id]
+        )
+        _row = cur.fetchone()
+        if _row:
+            _linked_job_cat = _row[0]
+
+    _inv_class = classify_invoice(
+        line_items=_inv_line_items,
+        total_cents=inv.get('amount', 0) or 0,
+        status=inv.get('status'),
+        linked_job_category=_linked_job_cat,
+    )
+    # Also write to legacy invoice_type for existing consumers (mv_funnel_leads,
+    # review app, etc). 'canceled' and 'unknown' leave invoice_type alone.
+    _legacy_invoice_type = (
+        _inv_class['category']
+        if _inv_class['category'] in ('treatment', 'inspection')
+        else None
+    )
+
     cur.execute("""
         INSERT INTO hcp_invoices (
             hcp_invoice_id, customer_id, hcp_customer_id, hcp_job_id,
@@ -635,14 +755,18 @@ def upsert_invoice(cur, customer_id, inv):
             amount_cents, subtotal_cents, due_amount_cents,
             discount_cents, tax_cents,
             invoice_date, sent_at, paid_at, due_at, service_date,
-            payment_method, payment_note
+            payment_method, payment_note,
+            work_category, review_needed, review_reason, classifier_signal, classified_at,
+            invoice_type
         ) VALUES (
             %(inv_id)s, %(cust_id)s, %(hcp_cust_id)s, %(job_id)s,
             %(inv_num)s, %(status)s, %(seq)s,
             %(amount)s, %(subtotal)s, %(due)s,
             %(discount)s, %(tax)s,
             %(inv_date)s, %(sent)s, %(paid)s, %(due_at)s, %(svc_date)s,
-            %(pay_method)s, %(pay_note)s
+            %(pay_method)s, %(pay_note)s,
+            %(work_category)s, %(review_needed)s, %(review_reason)s, %(classifier_signal)s, NOW(),
+            COALESCE(%(legacy_type)s, 'treatment')
         )
         ON CONFLICT (hcp_invoice_id) DO UPDATE SET
             status = EXCLUDED.status,
@@ -656,6 +780,12 @@ def upsert_invoice(cur, customer_id, inv):
             sent_at = COALESCE(EXCLUDED.sent_at, hcp_invoices.sent_at),
             payment_method = COALESCE(EXCLUDED.payment_method, hcp_invoices.payment_method),
             payment_note = COALESCE(EXCLUDED.payment_note, hcp_invoices.payment_note),
+            work_category = EXCLUDED.work_category,
+            review_needed = EXCLUDED.review_needed,
+            review_reason = EXCLUDED.review_reason,
+            classifier_signal = EXCLUDED.classifier_signal,
+            classified_at = NOW(),
+            invoice_type = COALESCE(EXCLUDED.invoice_type, hcp_invoices.invoice_type),
             updated_at = NOW()
     """, {
         'inv_id': inv.get('id'),
@@ -677,6 +807,11 @@ def upsert_invoice(cur, customer_id, inv):
         'svc_date': inv.get('service_date'),
         'pay_method': payment_method,
         'pay_note': payment_note,
+        'work_category': _inv_class['category'],
+        'review_needed': _inv_class['review_needed'],
+        'review_reason': _inv_class['review_reason'],
+        'classifier_signal': _inv_class['signal'],
+        'legacy_type': _legacy_invoice_type,
     })
 
     # Upsert line items — delete existing then re-insert (items don't have stable IDs across pulls)
@@ -1151,6 +1286,139 @@ def detect_exceptions(cur, customer_id):
 # Main pull logic
 # ============================================================
 
+
+def upsert_job_line_items(cur, hcp_job_id, items):
+    """Delete + re-insert line items for one job (matches hcp_invoice_items pattern)."""
+    cur.execute(
+        "DELETE FROM hcp_job_line_items WHERE hcp_job_id = %s",
+        [hcp_job_id],
+    )
+    for item in items:
+        cur.execute(
+            """
+            INSERT INTO hcp_job_line_items (
+                hcp_job_id, hcp_item_id, name, description, kind,
+                order_index, quantity_hundredths, unit_price_cents,
+                unit_cost_cents, amount_cents, taxable
+            ) VALUES (
+                %(job_id)s, %(item_id)s, %(name)s, %(desc)s, %(kind)s,
+                %(order)s, %(qty)s, %(price)s,
+                %(cost)s, %(amount)s, %(taxable)s
+            )
+            """,
+            {
+                'job_id': hcp_job_id,
+                'item_id': item.get('id'),
+                'name': item.get('name'),
+                'desc': item.get('description'),
+                'kind': item.get('kind'),
+                'order': item.get('order_index'),
+                'qty': int((item.get('quantity') or 0) * 100),
+                'price': item.get('unit_price') or 0,
+                'cost': item.get('unit_cost') or 0,
+                'amount': item.get('amount') or 0,
+                'taxable': item.get('taxable'),
+            },
+        )
+
+
+def resolve_unknown_jobs(cur, customer_id, api_key):
+    """
+    For every hcp_jobs row in this client with work_category='unknown',
+    fetch line items from HCP API, store them, and re-classify the job.
+
+    Returns the number of jobs that got a new (non-unknown) classification.
+    """
+    cur.execute(
+        """
+        SELECT j.hcp_job_id, j.description, j.tags, j.job_type,
+               j.total_amount_cents, j.status, j.original_estimate_id,
+               eo.name AS opt_name, eo.total_amount_cents AS opt_amount_cents,
+               eo.tags AS opt_tags, eo.message_from_pro AS opt_message,
+               eo.status AS opt_status
+        FROM hcp_jobs j
+        LEFT JOIN hcp_estimate_options eo ON eo.hcp_option_id = j.original_estimate_id
+        WHERE j.customer_id = %s
+          AND j.record_status = 'active'
+          AND j.work_category = 'unknown'
+        """,
+        [customer_id],
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return 0
+
+    resolved = 0
+    fetched = 0
+    for row in rows:
+        (hcp_job_id, desc, tags, hcp_job_type_field, amt, status,
+         orig_est_id, opt_name, opt_amt, opt_tags, opt_msg, opt_status) = row
+
+        # Fetch line items from HCP
+        try:
+            data = hcp_request(api_key, f'/jobs/{hcp_job_id}/line_items')
+        except Exception as e:
+            log.warning(f"  line items fetch failed for {hcp_job_id}: {e}")
+            continue
+        items = data.get('data') if isinstance(data, dict) else (data or [])
+        upsert_job_line_items(cur, hcp_job_id, items or [])
+        fetched += 1
+
+        line_items_for_classifier = [
+            {'name': it.get('name'), 'description': it.get('description'),
+             'amount_cents': it.get('amount') or 0}
+            for it in (items or [])
+        ]
+
+        linked_option = None
+        if orig_est_id and opt_name is not None:
+            linked_option = {
+                'name': opt_name,
+                'total_cents': opt_amt or 0,
+                'tags': opt_tags or [],
+                'message_from_pro': opt_msg,
+                'status': opt_status,
+            }
+
+        result = classify_job(
+            description=desc,
+            tags=tags,
+            hcp_job_type=hcp_job_type_field,
+            line_items=line_items_for_classifier,
+            total_cents=amt or 0,
+            status=status,
+            parent_job_classification=None,
+            linked_estimate=None,
+            linked_option=linked_option,
+        )
+
+        if result['category'] != 'unknown':
+            resolved += 1
+
+        cur.execute(
+            """
+            UPDATE hcp_jobs SET
+              work_category     = %(category)s,
+              review_needed     = %(review_needed)s,
+              review_reason     = %(review_reason)s,
+              classifier_signal = %(signal)s,
+              classified_at     = NOW()
+            WHERE hcp_job_id = %(job_id)s
+            """,
+            {
+                'job_id': hcp_job_id,
+                'category': result['category'],
+                'review_needed': result['review_needed'],
+                'review_reason': result['review_reason'],
+                'signal': result['signal'],
+            },
+        )
+
+    if fetched:
+        log.info(f"  Fetched line items for {fetched} unknown jobs, resolved {resolved}")
+    return resolved
+
+
 def pull_client(conn, customer_id, api_key, backfill=False):
     """Pull all HCP data for a single client."""
     start_ms = time.time()
@@ -1471,6 +1739,15 @@ def pull_client(conn, customer_id, api_key, backfill=False):
             conn.rollback()
             stats['errors'].append(f"exception detection: {e}")
             log.error(f"  Error detecting exceptions: {e}")
+
+        # ── 7. Resolve unknown-classified jobs via line item pull ──
+        try:
+            resolve_unknown_jobs(cur, customer_id, api_key)
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            stats['errors'].append(f"resolve unknown jobs: {e}")
+            log.error(f"  Error resolving unknowns: {e}")
 
     # Log the run
     duration_ms = int((time.time() - start_ms) * 1000)

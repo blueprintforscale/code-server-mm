@@ -59,7 +59,7 @@ Rationale: client is profitable despite individual metric concerns.
 | Low leads (months 6+, budget ≥$3K) | Risk | <20 leads |
 | Low leads + low ROAS + low guarantee (months 6+) | Risk | <30 leads AND ROAS <0.9 AND guarantee ≤2 |
 | High CPL | Risk | >$170 AND ROAS ≤3x |
-| Lead volume drop (CPL >$140) | Risk | >30% drop vs prior period AND CPL >$140 |
+| Lead volume drop (CPL >$150) | Risk | >30% drop vs prior period AND CPL >$150 |
 | Lead volume drop (CPL ≤$140) | Flag | >30% drop vs prior period BUT CPL ≤$140 (ads still efficient) |
 | Stale (months 4+) | Risk | ≥7 days since last lead |
 | Stale (months 1-3) | Risk | >10 days since last lead |
@@ -209,3 +209,48 @@ The recovery arrow (table) and trajectory verdict (drilldown) check whether the 
 ## Source File
 
 `risk-dashboard/migration.sql` → `compute_risk_status()` function (line ~513+)
+
+---
+
+## Sticky Status: Anti-Flapping System (2026-04-01)
+
+### Confirmation Period
+A computed status must persist for **3 consecutive daily snapshots** before becoming the confirmed (displayed) status. Until confirmed, the previous status holds.
+
+- **Dashboard** shows confirmed status (row colors, sorting)
+- **Pending badge** shown next to client name when computed differs from confirmed
+- **Slack alerts** only fire on **confirmed** transitions
+- **Soft heads-up** sent to manager channel on day 1 of pending
+- If computed status changes direction during pending period, the streak resets
+
+### Hysteresis Buffers
+Different thresholds for entering vs exiting risk:
+
+| Trigger | Entry (into Risk) | Exit (must clear to) |
+|---------|-------------------|---------------------|
+| CPL | > $170 | must drop to <= $150 |
+| Lead count (months 3-5) | <= 10 | must reach >= 15 |
+| Lead count (months 6+) | < 20 | must reach >= 25 |
+| Lead volume drop | > 30% drop | must recover to <= 20% drop |
+| Days since lead (months 4+) | >= 7 days | must drop to <= 4 days |
+| Days since lead (months 1-3) | > 10 days | must drop to <= 7 days |
+| Presentation ROAS thresholds | Standard | 0.5x lower to exit |
+
+### Tables
+- client_confirmed_status: Tracks confirmed vs pending status per client
+- risk_status_snapshots: confirmed_status and pending_status audit columns
+
+### Functions
+- update_confirmed_statuses(): Called daily by snapshot_daily.sh after ETL
+- compute_risk_status() accepts p_current_confirmed_status for hysteresis
+
+### Asymmetric Confirmation (Option C)
+Worsening transitions confirm faster than improving ones:
+
+| Transition | Days Needed | Rationale |
+|-----------|-------------|-----------|
+| Any to Risk | 1 (instant) | Risk is urgent, never miss a signal |
+| Healthy to Flag | 2 | Slight buffer, default to caution |
+| Risk to Flag | 3 | Partial improvement, verify consistency |
+| Flag to Healthy | 3 | Must prove sustained improvement |
+| Risk to Healthy | 5 | Must really prove full recovery |

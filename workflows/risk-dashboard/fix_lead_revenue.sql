@@ -52,6 +52,14 @@ SELECT hc.hcp_customer_id,
                AND (f.gclid IS NOT NULL OR f.source = 'Google Ads')
            )) THEN 'google_ads'
            WHEN hc.callrail_id LIKE 'WF_%' THEN 'google_ads'
+           -- GHL GCLID fallback: lead bypassed CallRail but GHL captured Google Click ID
+           WHEN EXISTS (
+             SELECT 1 FROM ghl_contacts gc
+             WHERE gc.customer_id = hc.customer_id
+               AND (gc.phone_normalized = hc.phone_normalized
+                    OR (hc.email IS NOT NULL AND hc.email != '' AND LOWER(gc.email) = LOWER(hc.email)))
+               AND gc.gclid IS NOT NULL AND gc.gclid != ''
+           ) THEN 'google_ads'
            ELSE 'unknown'
        END) AS lead_source_type,
    -- Inspection invoices
@@ -169,6 +177,13 @@ SELECT hc.hcp_customer_id,
           FROM form_submissions f
          WHERE f.customer_id = hc.customer_id AND (f.callrail_id = hc.callrail_id OR normalize_phone(f.customer_phone) = hc.phone_normalized OR (hc.email IS NOT NULL AND LOWER(f.customer_email) = LOWER(hc.email))) AND (f.gclid IS NOT NULL OR f.source = 'Google Ads')))
     OR (hc.callrail_id LIKE 'WF_%')
+    -- GHL GCLID fallback: include leads that bypassed CallRail but GHL captured Google Click ID
+    OR (EXISTS ( SELECT 1
+          FROM ghl_contacts gc
+         WHERE gc.customer_id = hc.customer_id
+           AND (gc.phone_normalized = hc.phone_normalized
+                OR (hc.email IS NOT NULL AND hc.email != '' AND LOWER(gc.email) = LOWER(hc.email)))
+           AND gc.gclid IS NOT NULL AND gc.gclid != ''))
 UNION ALL
 -- Part 2: CallRail calls with no HCP match (lead_only)
 SELECT NULL::text AS hcp_customer_id,

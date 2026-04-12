@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-require('dotenv').config({ path: __dirname + '/.env' });
 /**
  * Weekly Risk Report — Posts to #client_notifications every Sunday night (UK time)
  *
@@ -22,7 +21,7 @@ const pool = new Pool({
   ssl: false,
 });
 
-const SLACK_TOKEN = process.env.SLACK_BOT_TOKEN;
+const SLACK_TOKEN = 'xoxb-6594692085893-10476528834625-otlCrGN5kiu31kQYWDvrCAwC';
 const DEFAULT_CHANNEL = 'C0ADG0XCYE7'; // #reports
 
 // ── Slack API ──────────────────────────────────────────────
@@ -114,7 +113,9 @@ function buildMetricsLine(row) {
 
 async function buildWeeklyReport() {
   const result = await pool.query(`
-    SELECT * FROM get_dashboard_with_risk()
+    SELECT r.*, c.manual_risk
+    FROM get_dashboard_with_risk() r
+    JOIN clients c ON c.customer_id = r.customer_id
     ORDER BY sort_priority, client_name
   `);
 
@@ -180,7 +181,14 @@ async function buildWeeklyReport() {
   const adsRiskTotal = bothRisk.length + adsRisk.length;
   const adsHealthy = totalClients - adsRiskTotal;
   const adsHealthyPct = totalClients > 0 ? ((adsHealthy / totalClients) * 100).toFixed(0) : 0;
-  msg += `:dart: Ads Scorecard: ${adsHealthy} of ${totalClients} ads-healthy (${adsHealthyPct}%)\n\n`;
+  msg += `:dart: Ads Scorecard: ${adsHealthy} of ${totalClients} ads-healthy (${adsHealthyPct}%)\n`;
+
+  // Manual risk / Needs TLC
+  const manualRisk = rows.filter(r => r.manual_risk);
+  if (manualRisk.length > 0) {
+    msg += `:warning: Needs TLC: ${manualRisk.length} (${manualRisk.map(r => clientDisplayName(r.client_name)).join(', ')})\n`;
+  }
+  msg += '\n';
 
   // ── RISK ACCOUNTS ──
   if (riskCount > 0) {

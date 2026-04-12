@@ -617,6 +617,7 @@ def match_callrail(conn, customer_id):
     Step 2: Email match via form_submissions
     Step 3: Phone match via form_submissions
     Step 4: Phone match via webflow_submissions (GCLID required)
+    Step 5: Name match via GHL bridge (different phone, same person within 3 days)
     """
     cur = conn.cursor()
 
@@ -679,8 +680,57 @@ def match_callrail(conn, customer_id):
     """, (customer_id,))
     webflow_matches = cur.rowcount
 
+    # Step 5: Name match via GHL bridge — for customers still unmatched,
+    # find GHL contacts with matching first+last name but different phone,
+    # then link to CallRail call on the GHL phone, within 3 days of Jobber creation.
+    # Only matches when the name is unique in the customer account for the window.
+    cur.execute("""
+        UPDATE jobber_customers jc
+        SET callrail_id = sub.callrail_id,
+            match_method = 'name'
+        FROM (
+            SELECT DISTINCT ON (jc2.jobber_customer_id)
+                jc2.jobber_customer_id,
+                c.callrail_id
+            FROM jobber_customers jc2
+            JOIN ghl_contacts gc
+                ON gc.customer_id = jc2.customer_id
+                AND LOWER(TRIM(gc.first_name)) = LOWER(TRIM(jc2.first_name))
+                AND LOWER(TRIM(gc.last_name)) = LOWER(TRIM(jc2.last_name))
+                AND gc.phone_normalized IS NOT NULL
+                AND gc.phone_normalized != jc2.phone_normalized
+            JOIN calls c
+                ON normalize_phone(c.caller_phone) = gc.phone_normalized
+                AND c.callrail_company_id = (
+                    SELECT callrail_company_id FROM clients WHERE customer_id = %s
+                )
+            WHERE jc2.customer_id = %s
+              AND jc2.callrail_id IS NULL
+              AND jc2.phone_normalized IS NOT NULL
+              AND jc2.first_name IS NOT NULL AND TRIM(jc2.first_name) != ''
+              AND jc2.last_name IS NOT NULL AND TRIM(jc2.last_name) != ''
+              AND ABS(EXTRACT(EPOCH FROM jc2.jobber_created_at - c.start_time)) <= 3 * 86400
+              -- Uniqueness: no other Jobber customer with same name within 3 days
+              AND NOT EXISTS (
+                  SELECT 1 FROM jobber_customers jc3
+                  WHERE jc3.customer_id = jc2.customer_id
+                    AND jc3.jobber_customer_id != jc2.jobber_customer_id
+                    AND LOWER(TRIM(jc3.first_name)) = LOWER(TRIM(jc2.first_name))
+                    AND LOWER(TRIM(jc3.last_name)) = LOWER(TRIM(jc2.last_name))
+                    AND ABS(EXTRACT(EPOCH FROM jc3.jobber_created_at - jc2.jobber_created_at)) <= 3 * 86400
+              )
+            ORDER BY jc2.jobber_customer_id, c.start_time ASC
+        ) sub
+        WHERE jc.jobber_customer_id = sub.jobber_customer_id
+          AND jc.customer_id = %s
+          AND jc.callrail_id IS NULL
+    """, (customer_id, customer_id, customer_id))
+    name_matches = cur.rowcount
+    if name_matches:
+        print(f"    Step 5: Matched {name_matches} via GHL name bridge")
+
     conn.commit()
-    total = phone_matches + email_matches + form_phone_matches + webflow_matches
+    total = phone_matches + email_matches + form_phone_matches + webflow_matches + name_matches
     if email_matches > 0 or form_phone_matches > 0 or webflow_matches > 0:
         print(f"    Matching: {phone_matches} phone + {email_matches} email + {form_phone_matches} form-phone + {webflow_matches} webflow")
     return total

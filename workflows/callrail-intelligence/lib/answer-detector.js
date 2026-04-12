@@ -1,153 +1,218 @@
 // ============================================================
-// Answer Detector — Determines if a call was truly answered
-// Uses keyword matching on transcription + speaker analysis
+// Answer Detector — determines if a call was truly answered,
+// missed, or abandoned using transcript analysis + duration
 // ============================================================
 
 const config = require('../config');
 
-/**
- * Analyzes a call to determine if it was truly answered, missed,
- * or abandoned. Returns the correct tag and reasoning.
- *
- * @param {Object} call - CallRail call object with transcription, tags, etc.
- * @returns {{ tag: string, reason: string, confidence: number }}
- */
 function detectAnswerStatus(call) {
-    const transcription = getTranscriptionText(call);
-    const duration = call.duration || 0;
-    const speakerPercent = call.speaker_percent || null;
-    const callType = call.call_type || '';
-    const voicemail = call.voicemail || false;
+  const transcription = getTranscriptionText(call);
+  const hasDuration = call.duration != null;
+  const duration = call.duration || 0;
+  const speakerPercent = call.speaker_percent || null;
+  const callType = call.call_type || '';
+  const callrailStatus = (call.callrail_status || '').toLowerCase();
 
-    // Check for abandoned call type
-    if (callType === 'abandoned') {
-        return { tag: 'abandoned', reason: 'Call type is abandoned', confidence: 0.95 };
+  // ── NULL duration with transcript = don't trust duration ──
+  // Some calls have NULL duration but a full transcript. Check transcript first.
+  if (!hasDuration && transcription) {
+    const textSpeakers = countSpeakersFromText(transcription);
+    if (textSpeakers >= 2) {
+      return { tag: 'answered', reason: `No duration data but transcript has ${textSpeakers} speakers`, confidence: 0.9 };
     }
+    // Single speaker with transcript — check for voicemail/greeting patterns below
+  }
 
-    // Very short calls — caller hung up before greeting could finish
-    if (duration < 5) {
-        return { tag: 'abandoned', reason: `Very short duration (${duration}s) — caller hung up immediately`, confidence: 0.9 };
+  // ── Early exits (only when we have duration data or no transcript) ──
+  if (callType === 'abandoned' && !transcription) {
+    return { tag: 'abandoned', reason: 'Call type is abandoned', confidence: 0.95 };
+  }
+
+  if (hasDuration && duration < 5 && !transcription) {
+    return { tag: 'abandoned', reason: `Very short duration (${duration}s)`, confidence: 0.9 };
+  }
+
+  if (hasDuration && duration < 5 && transcription) {
+    // Very short but has a transcript — let transcript analysis decide
+    // (falls through to transcript-based classification below)
+  } else if (!hasDuration && !transcription) {
+    // No duration, no transcript — use CallRail signals
+    if (callrailStatus === 'answered' || call.answered === true) {
+      return { tag: 'answered', reason: 'No duration/transcript but CallRail says answered', confidence: 0.4 };
     }
+    return { tag: 'abandoned', reason: 'No duration or transcript data', confidence: 0.5 };
+  }
 
-    // No transcription available — fall back to duration
-    // Recording may be off, so duration is our best signal
-    if (!transcription) {
-        if (duration < 10) {
-            return { tag: 'abandoned', reason: `No transcription, short duration (${duration}s) — likely hung up during greeting`, confidence: 0.7 };
-        }
-        if (duration >= 60) {
-            return { tag: 'answered', reason: `No transcription but long duration (${duration}s) — real conversation`, confidence: 0.8 };
-        }
-        if (duration >= 20) {
-            return { tag: 'answered', reason: `No transcription but decent duration (${duration}s) — likely answered`, confidence: 0.6 };
-        }
-        // 10-19 seconds with no transcript — could be voicemail or brief missed call
-        if (voicemail) {
-            return { tag: 'missed', reason: `No transcription, short duration (${duration}s), voicemail flag set`, confidence: 0.7 };
-        }
-        return { tag: 'missed', reason: `No transcription, short duration (${duration}s) — uncertain`, confidence: 0.4 };
+  // ── CallRail missed/abandoned signal ──
+  // CallRail is highly reliable when it says a call was NOT answered (99.85% accurate).
+  // Only override if we have strong transcript evidence of a real conversation.
+  const callrailSaysMissed = call.answered === false
+    || callrailStatus === 'missed'
+    || callrailStatus === 'abandoned';
+
+  if (callrailSaysMissed) {
+    // Even if CallRail says missed, a long two-way transcript overrides
+    const textSpeakers = countSpeakersFromText(transcription);
+    if (transcription && duration >= 60 && textSpeakers >= 2) {
+      return { tag: 'answered', reason: `CallRail said missed but transcript shows ${duration}s conversation with ${textSpeakers} speakers`, confidence: 0.9 };
     }
-
-    const transcriptionLower = transcription.toLowerCase();
-    const speakerCount = getSpeakerCount(speakerPercent);
-
-    // Check for voicemail patterns
-    const voicemailMatch = findKeywordMatch(transcriptionLower, config.VOICEMAIL_KEYWORDS);
-    if (voicemailMatch && speakerCount <= 1) {
-        return { tag: 'missed', reason: `Voicemail detected: "${voicemailMatch}" (${speakerCount} speaker)`, confidence: 0.95 };
+    // Trust CallRail — classify as missed or abandoned based on duration
+    if (duration < 10) {
+      return { tag: 'abandoned', reason: `CallRail: not answered, short duration (${duration}s)`, confidence: 0.9 };
     }
+    return { tag: 'missed', reason: `CallRail: not answered (${duration}s)`, confidence: 0.9 };
+  }
 
-    // Check for greeting-only calls (abandoned during greeting)
-    // e.g. "Thank you for calling Pure Maintenance, please press 1..." but caller hung up
-    const greetingMatch = findKeywordMatch(transcriptionLower, config.GREETING_KEYWORDS);
-    if (greetingMatch && speakerCount <= 1) {
-        // Greeting plays but caller never spoke — abandoned
-        return { tag: 'abandoned', reason: `Caller hung up during greeting: "${greetingMatch}" (${speakerCount} speaker)`, confidence: 0.9 };
+  // ── From here on, CallRail says answered=true (which is unreliable) ──
+  // We use transcript + duration to verify
+
+  // ── No transcript fallback (duration-only) ──
+  if (!transcription) {
+    if (duration < 10) {
+      return { tag: 'abandoned', reason: `No transcription, short duration (${duration}s)`, confidence: 0.7 };
     }
-
-    // Greeting detected but there IS a second speaker — real call
-    if (greetingMatch && speakerCount >= 2 && duration >= 20) {
-        return { tag: 'answered', reason: `Greeting + ${speakerCount} speakers + ${duration}s duration — real conversation`, confidence: 0.9 };
+    // Stricter threshold: voicemails often run 20-40s, so require 45s+
+    if (duration >= 45) {
+      return { tag: 'answered', reason: `No transcription but solid duration (${duration}s)`, confidence: 0.5 };
     }
-
-    // Voicemail keywords but multiple speakers — might be a greeting before live answer
-    if (voicemailMatch && speakerCount >= 2 && duration >= 30) {
-        return { tag: 'answered', reason: `Voicemail keywords but ${speakerCount} speakers and ${duration}s — likely answered after greeting`, confidence: 0.7 };
+    if (duration >= 20) {
+      return { tag: 'missed', reason: `No transcription, short-moderate duration (${duration}s) — likely voicemail`, confidence: 0.5 };
     }
+    return { tag: 'missed', reason: 'No transcription and uncertain', confidence: 0.4 };
+  }
 
-    // No voicemail/greeting keywords, single speaker, short duration — likely abandoned
-    if (speakerCount <= 1 && duration < 15) {
-        return { tag: 'abandoned', reason: `Single speaker, short duration (${duration}s) — likely hung up before connecting`, confidence: 0.8 };
+  // ── Transcript-based classification ──
+  const transcriptionLower = transcription.toLowerCase();
+
+  // Parse speaker count from transcript text (more reliable than speaker_percent)
+  const textSpeakerCount = countSpeakersFromText(transcription);
+  const metaSpeakerCount = getSpeakerCount(speakerPercent);
+  const speakerCount = Math.max(textSpeakerCount, metaSpeakerCount);
+
+  const voicemailMatch = findKeywordMatch(transcriptionLower, config.VOICEMAIL_KEYWORDS);
+  const greetingMatch = findKeywordMatch(transcriptionLower, config.GREETING_KEYWORDS);
+
+  // ── Long call override: 60s+ with real two-way conversation = answered ──
+  if (duration >= 60 && textSpeakerCount >= 2) {
+    return { tag: 'answered', reason: `Long call override: ${duration}s with ${textSpeakerCount} speakers in transcript`, confidence: 0.95 };
+  }
+
+  // ── Voicemail detection ──
+  if (voicemailMatch && speakerCount <= 1) {
+    return { tag: 'missed', reason: `Voicemail detected: "${voicemailMatch}"`, confidence: 0.95 };
+  }
+
+  // Voicemail with caller leaving a message (Agent is IVR, Caller leaves msg)
+  if (voicemailMatch && duration < 60) {
+    return { tag: 'missed', reason: `Voicemail with message left: "${voicemailMatch}" (${duration}s)`, confidence: 0.85 };
+  }
+
+  // ── Greeting/IVR detection ──
+  // Check if a real person introduced themselves (e.g. "This is Jill", "Hello, this is Ethan")
+  // This distinguishes a live answer from an IVR greeting, even with only 1 speaker
+  const personalIntro = hasPersonalIntroduction(transcriptionLower);
+
+  if (greetingMatch && speakerCount <= 1) {
+    if (personalIntro) {
+      return { tag: 'answered', reason: `Agent introduced themselves: "${personalIntro}" — real person answered`, confidence: 0.85 };
     }
-
-    // Multiple speakers and decent duration — answered
-    if (speakerCount >= 2 && duration >= 15) {
-        return { tag: 'answered', reason: `${speakerCount} speakers, ${duration}s duration — real conversation`, confidence: 0.85 };
+    if (duration < 10) {
+      return { tag: 'abandoned', reason: `Caller hung up during greeting: "${greetingMatch}"`, confidence: 0.9 };
     }
+    return { tag: 'missed', reason: `IVR/greeting only, no conversation: "${greetingMatch}" (${duration}s)`, confidence: 0.85 };
+  }
 
-    // Single speaker but long duration — could be leaving a long voicemail
-    if (speakerCount <= 1 && duration >= 30) {
-        if (voicemailMatch) {
-            return { tag: 'missed', reason: `Long voicemail left (${duration}s)`, confidence: 0.8 };
-        }
-        // Could be a monologue or recording — uncertain
-        return { tag: 'answered', reason: `Long duration (${duration}s) but single speaker — uncertain, defaulting to answered`, confidence: 0.4 };
+  // Two speakers with greeting + decent duration = real call
+  if (greetingMatch && speakerCount >= 2 && duration >= 20) {
+    return { tag: 'answered', reason: `Greeting + ${speakerCount} speakers + ${duration}s`, confidence: 0.9 };
+  }
+
+  // Voicemail keywords but clearly a conversation
+  if (voicemailMatch && speakerCount >= 2 && duration >= 30) {
+    return { tag: 'answered', reason: `Voicemail keywords but ${speakerCount} speakers and ${duration}s`, confidence: 0.7 };
+  }
+
+  // ── Speaker + duration heuristics ──
+  if (speakerCount <= 1 && duration < 15) {
+    return { tag: 'abandoned', reason: `Single speaker, short duration (${duration}s)`, confidence: 0.8 };
+  }
+
+  if (speakerCount >= 2 && duration >= 15) {
+    return { tag: 'answered', reason: `${speakerCount} speakers, ${duration}s duration`, confidence: 0.85 };
+  }
+
+  if (speakerCount <= 1 && duration >= 30) {
+    if (voicemailMatch) {
+      return { tag: 'missed', reason: `Long voicemail left (${duration}s)`, confidence: 0.8 };
     }
+    return { tag: 'answered', reason: `Long duration (${duration}s) but single speaker — uncertain`, confidence: 0.4 };
+  }
 
-    // Default: use CallRail's determination with low confidence
-    return {
-        tag: call.answered ? 'answered' : 'missed',
-        reason: 'No strong signals — using CallRail default',
-        confidence: 0.3,
-    };
+  // ── Fallback ──
+  return {
+    tag: call.answered ? 'answered' : 'missed',
+    reason: 'No strong signals — using CallRail default',
+    confidence: 0.3,
+  };
 }
 
-// ============================================================
-// Helpers
-// ============================================================
+/**
+ * Detect if the agent personally introduced themselves (not just an IVR greeting).
+ * E.g. "This is Jill", "Hello, this is Ethan", "My name is Bailey"
+ * Returns the matched phrase or null.
+ */
+function hasPersonalIntroduction(transcriptionLower) {
+  // "this is [Name]" pattern — but exclude IVR-style phrases
+  const introMatch = transcriptionLower.match(/\bthis is ([a-z]+)/);
+  if (introMatch) {
+    const name = introMatch[1];
+    // Exclude common IVR words that follow "this is"
+    const ivrWords = ['a', 'an', 'the', 'your', 'our', 'not', 'pure', 'mold', 'no', 'being'];
+    if (!ivrWords.includes(name) && name.length >= 2) {
+      return `this is ${name}`;
+    }
+  }
+  // "my name is [Name]"
+  const nameMatch = transcriptionLower.match(/\bmy name is ([a-z]+)/);
+  if (nameMatch && nameMatch[1].length >= 2) {
+    return `my name is ${nameMatch[1]}`;
+  }
+  return null;
+}
 
 /**
- * Extract text from transcription (handles different formats).
+ * Count distinct speakers by parsing "Agent:" and "Caller:" labels in transcript text.
+ * More reliable than speaker_percent which is often missing.
  */
+function countSpeakersFromText(transcription) {
+  if (!transcription) return 0;
+  const hasAgent = /\bAgent:/i.test(transcription);
+  const hasCaller = /\bCaller:/i.test(transcription);
+  return (hasAgent ? 1 : 0) + (hasCaller ? 1 : 0);
+}
+
 function getTranscriptionText(call) {
-    if (!call.transcription) return '';
-
-    // Transcription can be a string or an object
-    if (typeof call.transcription === 'string') {
-        return call.transcription;
-    }
-
-    // If it's an object/array of utterances, join them
-    if (Array.isArray(call.transcription)) {
-        return call.transcription.map(u => u.content || u.text || '').join(' ');
-    }
-
-    return '';
+  if (!call.transcription) return '';
+  if (typeof call.transcription === 'string') return call.transcription;
+  if (Array.isArray(call.transcription)) {
+    return call.transcription.map(u => u.content || u.text || '').join(' ');
+  }
+  return '';
 }
 
-/**
- * Count unique speakers from speaker_percent data.
- */
 function getSpeakerCount(speakerPercent) {
-    if (!speakerPercent) return 0;
-
-    if (typeof speakerPercent === 'object') {
-        return Object.keys(speakerPercent).length;
-    }
-
-    return 0;
+  if (!speakerPercent) return 0;
+  if (typeof speakerPercent === 'object' && !Array.isArray(speakerPercent)) {
+    return Object.keys(speakerPercent).length;
+  }
+  return 0;
 }
 
-/**
- * Find the first matching keyword in the text.
- */
 function findKeywordMatch(text, keywords) {
-    for (const keyword of keywords) {
-        if (text.includes(keyword)) {
-            return keyword;
-        }
-    }
-    return null;
+  for (const keyword of keywords) {
+    if (text.includes(keyword)) return keyword;
+  }
+  return null;
 }
 
-module.exports = { detectAnswerStatus };
+module.exports = { detectAnswerStatus, countSpeakersFromText };

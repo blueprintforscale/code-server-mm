@@ -113,8 +113,8 @@ def pull_forms_for_account(conn, account_id, api_key, client_map, start_date, en
                     INSERT INTO form_submissions (
                         callrail_id, customer_id, callrail_company_id,
                         customer_phone, customer_email, customer_name,
-                        submitted_at, source, medium, gclid, form_name
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        submitted_at, source, medium, gclid, form_name, phone_normalized
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (callrail_id) DO UPDATE SET
                         customer_phone = COALESCE(EXCLUDED.customer_phone, form_submissions.customer_phone),
                         customer_email = COALESCE(EXCLUDED.customer_email, form_submissions.customer_email),
@@ -123,6 +123,7 @@ def pull_forms_for_account(conn, account_id, api_key, client_map, start_date, en
                         medium = COALESCE(EXCLUDED.medium, form_submissions.medium),
                         gclid = COALESCE(EXCLUDED.gclid, form_submissions.gclid),
                         form_name = COALESCE(EXCLUDED.form_name, form_submissions.form_name),
+                        phone_normalized = COALESCE(EXCLUDED.phone_normalized, form_submissions.phone_normalized),
                         updated_at = NOW()
                 """, [
                     f['id'], customer_id, company_id,
@@ -132,6 +133,7 @@ def pull_forms_for_account(conn, account_id, api_key, client_map, start_date, en
                     f.get('submitted_at'),
                     source or None, medium or None, gclid,
                     f.get('form_name') or None,
+                    normalize_phone(f.get('customer_phone_number')),
                 ])
                 cur.execute("RELEASE SAVEPOINT sp")
                 upserted += 1
@@ -164,16 +166,20 @@ def main():
         # Get CallRail accounts and build client map
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT customer_id, name, callrail_company_id, callrail_account_id, callrail_api_key
+                SELECT customer_id, name, callrail_company_id, callrail_account_id, callrail_api_key,
+                       additional_callrail_company_ids
                 FROM clients WHERE status = 'active'
             """)
             clients = cur.fetchall()
 
-        # Build company_id -> client map
+        # Build company_id -> client map (includes additional_callrail_company_ids,
+        # all stored under the primary customer_id)
         client_map = {}
-        for cid, name, comp_id, acc_id, api_key in clients:
+        for cid, name, comp_id, acc_id, api_key, extras in clients:
             if comp_id:
                 client_map[comp_id] = {'customer_id': cid, 'name': name}
+            for extra in (extras or []):
+                client_map[extra] = {'customer_id': cid, 'name': name}
 
         # Get unique accounts
         # Use shared account from env or per-client keys

@@ -1,0 +1,14 @@
+{
+  "name": "blueprint-bulletin",
+  "version": "1.0.0",
+  "description": "Weekly changelog digest posted to Slack by Blueprint Brain",
+  "main": "bulletin.js",
+  "scripts": {
+    "start": "node bulletin.js",
+    "dry-run": "node bulletin.js --dry-run",
+    "test": "node bulletin.js --dry-run"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1"
+  }
+}

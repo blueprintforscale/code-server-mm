@@ -1175,14 +1175,16 @@ def detect_exceptions(cur, customer_id):
           AND count_revenue = true
     """, {'cid': customer_id})
 
-    # 10d. Auto-fix: restore count_revenue on estimates that were previously $0/unknown
-    #      but now have real amounts and approval (placeholder -> filled in)
+    # 10d. Auto-fix: restore count_revenue on APPROVED treatment estimates
+    #      The classifier handles treatment/inspection separation; if it says
+    #      treatment AND it's approved, it should count regardless of dollar amount
+    #      (catches the Work Authorization $0 pattern where pricing is on the invoice).
     cur.execute("""
         UPDATE hcp_estimates
         SET count_revenue = true, updated_at = NOW()
         WHERE customer_id = %(cid)s
           AND estimate_type = 'treatment'
-          AND approved_total_cents >= 100000
+          AND status = 'approved'
           AND record_status IN ('active', 'option')
           AND count_revenue = false
     """, {'cid': customer_id})

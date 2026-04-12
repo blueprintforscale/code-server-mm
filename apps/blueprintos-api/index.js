@@ -204,6 +204,11 @@ fastify.get('/clients/:customerId/funnel', async (request) => {
     sourceWhere = `AND c.source = 'Google My Business' AND NOT is_google_ads_call(c.source, c.source_name, c.gclid)`;
   } else if (source === 'lsa') {
     sourceWhere = `AND c.source_name = 'LSA'`;
+  } else if (source === 'referral') {
+    // Referral leads come from GHL "Lead Source Form", not CallRail.
+    // Use an impossible filter so no unmatched calls/forms are added —
+    // referral quality leads come only from mv_funnel_leads (HCP-matched).
+    sourceWhere = `AND 1=0`;
   }
 
   // LSA source: use lsa_leads table directly for lead counts + HCP for funnel progress
@@ -350,6 +355,8 @@ fastify.get('/groups/:slug/funnel', async (request) => {
     sourceWhere = `AND c.source = 'Google My Business' AND NOT is_google_ads_call(c.source, c.source_name, c.gclid)`;
   } else if (source === 'lsa') {
     sourceWhere = `AND c.source_name = 'LSA'`;
+  } else if (source === 'referral') {
+    sourceWhere = `AND 1=0`;
   }
 
   const result = await getHcpFunnel(
@@ -616,7 +623,7 @@ async function getLsaFunnel(pool, customerId, params, dateWhere, cidCTE) {
         )) as estimate_sent,
         COUNT(*) FILTER (WHERE EXISTS (
           SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(lm.all_ids)
-            AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND eg.approved_total_cents >= 100000
+            AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND GREATEST(eg.approved_total_cents, eg.highest_option_cents) >= 100000
         )) as estimate_approved,
         COUNT(*) FILTER (WHERE EXISTS (
           SELECT 1 FROM hcp_jobs j WHERE j.hcp_customer_id = ANY(lm.all_ids)
@@ -631,7 +638,7 @@ async function getLsaFunnel(pool, customerId, params, dateWhere, cidCTE) {
             AND inv.status NOT IN ('canceled','voided') AND inv.amount_cents > 0
         ) OR EXISTS (
           SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(lm.all_ids)
-            AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND eg.approved_total_cents >= 100000
+            AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND GREATEST(eg.approved_total_cents, eg.highest_option_cents) >= 100000
         )) as revenue_closed,
         COALESCE(SUM(
           COALESCE((SELECT SUM(inv.amount_cents) FROM hcp_invoices inv WHERE inv.hcp_customer_id = ANY(lm.all_ids)
@@ -645,7 +652,7 @@ async function getLsaFunnel(pool, customerId, params, dateWhere, cidCTE) {
         ), 0) / 100.0 as estimate_sent_value,
         COALESCE(SUM(
           COALESCE((SELECT SUM(eg.approved_total_cents) FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(lm.all_ids)
-            AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND eg.approved_total_cents >= 100000), 0)
+            AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND GREATEST(eg.approved_total_cents, eg.highest_option_cents) >= 100000), 0)
         ), 0) / 100.0 as estimate_approved_value
       FROM lsa_matched lm
     ),
@@ -706,6 +713,9 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
     mvSourceWhere = `AND fl.lead_source = 'lsa'`;
   } else if (sourceWhere.includes('is_google_ads_call')) {
     mvSourceWhere = `AND fl.lead_source = 'google_ads'`;
+  } else if (sourceWhere.includes('1=0')) {
+    // Referral source: no CallRail, leads come from GHL Lead Source Form
+    mvSourceWhere = `AND fl.lead_source = 'referral'`;
   }
 
   const mvDateWhere = dateWhere.replace(/lead_date/g, 'fl.hcp_created_at::date');
@@ -725,6 +735,9 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
   } else if (sourceWhere.includes('is_google_ads_call')) {
     crSourceWhere = `AND is_google_ads_call(c2.source, c2.source_name, c2.gclid)`;
     fmSourceWhere = `AND (f2.gclid IS NOT NULL OR f2.source = 'Google Ads')`;
+  } else if (sourceWhere.includes('1=0')) {
+    crSourceWhere = `AND 1=0`;
+    fmSourceWhere = `AND 1=0`;
   }
 
   // Should abandoned always be excluded? (extra_spam_keywords includes 'abandoned')
@@ -2205,6 +2218,14 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
       OR EXISTS (SELECT 1 FROM lsa_leads l WHERE l.hcp_customer_id = hc.hcp_customer_id AND l.customer_id = hc.customer_id)
     )`;
     unmatchedSourceWhere = `AND c.source_name = 'LSA'`;
+  } else if (source === 'referral') {
+    attributionWhere = `AND (
+      hc.attribution_override = 'referral'
+      OR EXISTS (SELECT 1 FROM ghl_contacts gc WHERE gc.customer_id = hc.customer_id
+        AND (gc.phone_normalized = hc.phone_normalized OR (hc.email IS NOT NULL AND LOWER(gc.email) = LOWER(hc.email)))
+        AND LOWER(gc.source) = 'lead source form')
+    )`;
+    unmatchedSourceWhere = `AND 1=0`;
   } else {
     // Default: Google Ads
     attributionWhere = `AND (
@@ -2228,6 +2249,7 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
   if (source === 'gbp') mvSourceWhere = "AND fl.lead_source = 'gbp'";
   else if (source === 'lsa') mvSourceWhere = "AND fl.lead_source = 'lsa'";
   else if (source === 'google_ads') mvSourceWhere = "AND fl.lead_source = 'google_ads'";
+  else if (source === 'referral') mvSourceWhere = "AND fl.lead_source = 'referral'";
 
   // Default: HCP lead spreadsheet
   const { rows } = await pool.query(`
@@ -2278,7 +2300,7 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
         EXISTS (SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(pg.all_ids)
           AND eg.status IN ('sent','approved','declined') AND eg.count_revenue AND eg.estimate_type = 'treatment') as estimate_sent,
         EXISTS (SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(pg.all_ids)
-          AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND eg.approved_total_cents >= 100000) as estimate_approved,
+          AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND GREATEST(eg.approved_total_cents, eg.highest_option_cents) >= 100000) as estimate_approved,
         EXISTS (SELECT 1 FROM hcp_jobs j WHERE j.hcp_customer_id = ANY(pg.all_ids)
           AND j.record_status = 'active' AND j.status IN ('scheduled','complete rated','complete unrated','in progress')
           AND NOT (
@@ -2317,10 +2339,10 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
           )) as job_completed,
         (EXISTS (SELECT 1 FROM hcp_invoices inv WHERE inv.hcp_customer_id = ANY(pg.all_ids) AND inv.status NOT IN ('canceled','voided') AND inv.amount_cents > 0)
         OR EXISTS (SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(pg.all_ids)
-          AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND eg.approved_total_cents >= 100000)) as revenue_closed,
+          AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND GREATEST(eg.approved_total_cents, eg.highest_option_cents) >= 100000)) as revenue_closed,
         -- Revenue
         COALESCE((SELECT SUM(eg.approved_total_cents) FROM v_estimate_groups eg
-          WHERE eg.hcp_customer_id = ANY(pg.all_ids) AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND eg.approved_total_cents >= 100000), 0) / 100.0 as approved_revenue,
+          WHERE eg.hcp_customer_id = ANY(pg.all_ids) AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND GREATEST(eg.approved_total_cents, eg.highest_option_cents) >= 100000), 0) / 100.0 as approved_revenue,
         COALESCE((SELECT SUM(i.amount_cents) FROM hcp_invoices i
           WHERE i.hcp_customer_id = ANY(pg.all_ids) AND i.status NOT IN ('canceled','voided') AND i.amount_cents > 0), 0) / 100.0 as invoiced_revenue,
         COALESCE((SELECT json_agg(json_build_object('amount', i.amount_cents / 100.0, 'type', i.invoice_type, 'status', i.status) ORDER BY i.amount_cents) FROM hcp_invoices i
@@ -2510,7 +2532,8 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
   // Post-filter: use getHcpFunnel's quality_phones as single source of truth
   const sourceWhere = source === 'google_ads' ? 'AND is_google_ads_call(c2.source, c2.source_name, c2.gclid)'
     : source === 'gbp' ? "AND c2.source = 'Google My Business' AND NOT is_google_ads_call(c2.source, c2.source_name, c2.gclid)"
-    : source === 'lsa' ? "AND c2.source_name = 'LSA'" : '';
+    : source === 'lsa' ? "AND c2.source_name = 'LSA'"
+    : source === 'referral' ? "AND 1=0" : '';
   const funnelDateWhere = `AND lead_date BETWEEN '${startDate}'::date AND '${endDate}'::date`;
   const funnelCidCTE = `WITH client_ids AS (SELECT customer_id FROM clients WHERE customer_id = ${customerId} OR parent_customer_id = ${customerId})`;
   const extraSpam = clientResult.rows[0]?.extra_spam_keywords || null;
@@ -2525,7 +2548,7 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
   const drawerMatchedPhones = new Set(filtered.filter(r => r.match_status === 'matched').map(r => r.phone));
   const sourceFilter = source === 'gbp' ? "AND lead_source = 'gbp'" 
     : source === 'lsa' ? "AND lead_source = 'lsa'"
-    : source === 'google_ads' ? "AND lead_source = 'google_ads'" : '';
+    : source === 'google_ads' ? "AND lead_source = 'google_ads'" : source === 'referral' ? "AND lead_source = 'referral'" : '';
   const { rows: hcpMatchedRows } = await pool.query(
     `SELECT DISTINCT phone_normalized FROM mv_funnel_leads WHERE customer_id = $1 AND phone_normalized = ANY($2) ${sourceFilter}`,
     [customerId, qualityPhones]
@@ -2579,7 +2602,7 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
         AND NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl WHERE fl.customer_id = $1 AND fl.phone_normalized = normalize_phone(f.customer_phone))
         AND NOT EXISTS (SELECT 1 FROM calls c WHERE c.customer_id IN (SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1)
           AND normalize_phone(c.caller_phone) = normalize_phone(f.customer_phone) AND c.first_call = true)
-    `, [customerId, missingPhones, source === 'google_ads' ? 'google_ads' : source === 'gbp' ? 'gbp' : 'other']);
+    `, [customerId, missingPhones, source === 'google_ads' ? 'google_ads' : source === 'gbp' ? 'gbp' : source === 'referral' ? 'referral' : 'other']);
     const seen = new Set();
     for (const row of missingRows) {
       if (!seen.has(row.phone)) { seen.add(row.phone); filtered.push(row); }

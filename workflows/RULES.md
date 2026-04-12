@@ -233,6 +233,13 @@ has_job_completed = EXISTS(qualifying completed treatment job: work_category='tr
 
 This means a customer with an approved treatment estimate but no qualifying HCP job still counts as `job_scheduled`. Same for treatment invoices → `job_completed`. Catches the Pure Air Pros workflow where work is committed via estimate approval rather than a formal job record.
 
+
+**GREATEST threshold (added 2026-04-11):** Estimate approval threshold uses `GREATEST(approved_total_cents, highest_option_cents) >= $1k` instead of just `approved_total_cents`. This catches the "Work Authorization" pattern where the client clicks approve on a $0 authorization option, but the actual pricing option has real $$. Applied in both `mv_funnel_leads.sql` and `apps/blueprintos-api/index.js` (6 occurrences each).
+
+**Same-day tolerance (added 2026-04-11):** The GA touch-time check on estimates uses DATE comparison (`eg.sent_at::date >= lb.first_ga_touch_time::date`) instead of timestamp, so estimates created within minutes of the GA touch on the same day always pass. Previously, a 2-minute difference (estimate at 3:40 PM, GA touch at 3:42 PM) would exclude the estimate.
+
+**Referral source (added 2026-04-11):** `lead_source = 'referral'` is set when a GHL contact has `LOWER(source) = 'lead source form'`. Referral leads have no CallRail trail — funnel uses `AND 1=0` for unmatched calls/forms (only HCP-matched leads count). Source tab enabled for Sy Elijah Atlanta + Raleigh.
+
 **Source file:** `~/projects/workflows/views/mv_funnel_leads.sql`
 
 ---
@@ -545,9 +552,9 @@ When the VA sees multiple records at the same address, they can:
 | 3 | $0 estimates (`estimate_type = 'unknown'`) | `false` |
 | 4 | Canceled segments | `false` |
 | 5 | Segments within 10% of parent job amount (`segment >= parent * 0.9`) | `false` |
-| 6 | Restored: approved treatment estimates >= $1,000 that were previously $0/unknown placeholders | `true` |
+| 6 | Restored: approved treatment estimates (any amount) that were previously $0/unknown placeholders | `true` |
 
-**Rule 6 detail:** When an estimate starts as a $0 placeholder (triggering rule 3), but the client later fills in the amount and the customer approves it, the ETL restores `count_revenue = true`. This prevents approved treatment estimates from being permanently hidden after starting as placeholders. Added 2026-04-01.
+**Rule 6 detail (updated 2026-04-11):** When an estimate starts as a $0 placeholder (triggering rule 3), but the classifier later sets `estimate_type = 'treatment'` and the estimate status becomes `approved`, the ETL restores `count_revenue = true` **regardless of dollar amount**. This catches the Pure Air Pros "Work Authorization" pattern where the approved option is $0 (an authorization document) but the real pricing is on the invoice. Previously required `approved_total_cents >= $1,000` which missed 749 estimates cross-client. The `estimate_type = 'treatment'` classifier now handles treatment/inspection separation, making the dollar floor redundant for approved estimates.
 
 **Revenue exceeds estimate flag:** If total segment revenue > 120% of approved estimate, flag `revenue_exceeds_estimate` is added.
 

@@ -623,7 +623,7 @@ async function getLsaFunnel(pool, customerId, params, dateWhere, cidCTE) {
         )) as estimate_sent,
         COUNT(*) FILTER (WHERE EXISTS (
           SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(lm.all_ids)
-            AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND GREATEST(eg.approved_total_cents, eg.highest_option_cents) >= 100000
+            AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment'
         )) as estimate_approved,
         COUNT(*) FILTER (WHERE EXISTS (
           SELECT 1 FROM hcp_jobs j WHERE j.hcp_customer_id = ANY(lm.all_ids)
@@ -638,7 +638,7 @@ async function getLsaFunnel(pool, customerId, params, dateWhere, cidCTE) {
             AND inv.status NOT IN ('canceled','voided') AND inv.amount_cents > 0
         ) OR EXISTS (
           SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(lm.all_ids)
-            AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND GREATEST(eg.approved_total_cents, eg.highest_option_cents) >= 100000
+            AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment'
         )) as revenue_closed,
         COALESCE(SUM(
           COALESCE((SELECT SUM(inv.amount_cents) FROM hcp_invoices inv WHERE inv.hcp_customer_id = ANY(lm.all_ids)
@@ -652,7 +652,7 @@ async function getLsaFunnel(pool, customerId, params, dateWhere, cidCTE) {
         ), 0) / 100.0 as estimate_sent_value,
         COALESCE(SUM(
           COALESCE((SELECT SUM(eg.approved_total_cents) FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(lm.all_ids)
-            AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND GREATEST(eg.approved_total_cents, eg.highest_option_cents) >= 100000), 0)
+            AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment'), 0)
         ), 0) / 100.0 as estimate_approved_value
       FROM lsa_matched lm
     ),
@@ -2300,7 +2300,7 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
         EXISTS (SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(pg.all_ids)
           AND eg.status IN ('sent','approved','declined') AND eg.count_revenue AND eg.estimate_type = 'treatment') as estimate_sent,
         EXISTS (SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(pg.all_ids)
-          AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND GREATEST(eg.approved_total_cents, eg.highest_option_cents) >= 100000) as estimate_approved,
+          AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment') as estimate_approved,
         EXISTS (SELECT 1 FROM hcp_jobs j WHERE j.hcp_customer_id = ANY(pg.all_ids)
           AND j.record_status = 'active' AND j.status IN ('scheduled','complete rated','complete unrated','in progress')
           AND NOT (
@@ -2339,10 +2339,10 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
           )) as job_completed,
         (EXISTS (SELECT 1 FROM hcp_invoices inv WHERE inv.hcp_customer_id = ANY(pg.all_ids) AND inv.status NOT IN ('canceled','voided') AND inv.amount_cents > 0)
         OR EXISTS (SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(pg.all_ids)
-          AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND GREATEST(eg.approved_total_cents, eg.highest_option_cents) >= 100000)) as revenue_closed,
+          AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment')) as revenue_closed,
         -- Revenue
         COALESCE((SELECT SUM(eg.approved_total_cents) FROM v_estimate_groups eg
-          WHERE eg.hcp_customer_id = ANY(pg.all_ids) AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment' AND GREATEST(eg.approved_total_cents, eg.highest_option_cents) >= 100000), 0) / 100.0 as approved_revenue,
+          WHERE eg.hcp_customer_id = ANY(pg.all_ids) AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment'), 0) / 100.0 as approved_revenue,
         COALESCE((SELECT SUM(i.amount_cents) FROM hcp_invoices i
           WHERE i.hcp_customer_id = ANY(pg.all_ids) AND i.status NOT IN ('canceled','voided') AND i.amount_cents > 0), 0) / 100.0 as invoiced_revenue,
         COALESCE((SELECT json_agg(json_build_object('amount', i.amount_cents / 100.0, 'type', i.invoice_type, 'status', i.status) ORDER BY i.amount_cents) FROM hcp_invoices i

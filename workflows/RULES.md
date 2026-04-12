@@ -234,7 +234,7 @@ has_job_completed = EXISTS(qualifying completed treatment job: work_category='tr
 This means a customer with an approved treatment estimate but no qualifying HCP job still counts as `job_scheduled`. Same for treatment invoices → `job_completed`. Catches the Pure Air Pros workflow where work is committed via estimate approval rather than a formal job record.
 
 
-**GREATEST threshold (added 2026-04-11):** Estimate approval threshold uses `GREATEST(approved_total_cents, highest_option_cents) >= $1k` instead of just `approved_total_cents`. This catches the "Work Authorization" pattern where the client clicks approve on a $0 authorization option, but the actual pricing option has real $$. Applied in both `mv_funnel_leads.sql` and `apps/blueprintos-api/index.js` (6 occurrences each).
+**Estimate amount threshold removed (2026-04-11):** The `>= $1k` threshold on `has_estimate_approved` has been removed entirely. The `estimate_type = treatment` classifier handles treatment/inspection separation, making the dollar floor redundant. An estimate counts as approved if: status=approved, count_revenue=true, estimate_type=treatment -- regardless of dollar amount. Catches the Work Authorization $0 pattern where pricing is on the invoice. Default: estimates are treatment unless explicitly classified as testing.
 
 **Same-day tolerance (added 2026-04-11):** The GA touch-time check on estimates uses DATE comparison (`eg.sent_at::date >= lb.first_ga_touch_time::date`) instead of timestamp, so estimates created within minutes of the GA touch on the same day always pass. Previously, a 2-minute difference (estimate at 3:40 PM, GA touch at 3:42 PM) would exclude the estimate.
 

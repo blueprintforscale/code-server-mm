@@ -171,13 +171,13 @@
           WHERE (eg.hcp_customer_id = ANY (lb.all_ids)) AND (eg.status = ANY (ARRAY['sent'::text, 'approved'::text, 'declined'::text])) AND eg.count_revenue AND eg.estimate_type = 'treatment'::text AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR eg.sent_at::date >= lb.first_ga_touch_time::date))) AS has_estimate_sent,
     (EXISTS ( SELECT 1
            FROM v_estimate_groups eg
-          WHERE (eg.hcp_customer_id = ANY (lb.all_ids)) AND eg.status = 'approved'::text AND eg.count_revenue AND eg.estimate_type = 'treatment'::text AND GREATEST(eg.approved_total_cents, eg.highest_option_cents) >= 100000 AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR eg.sent_at::date >= lb.first_ga_touch_time::date))) AS has_estimate_approved,
+          WHERE (eg.hcp_customer_id = ANY (lb.all_ids)) AND eg.status = 'approved'::text AND eg.count_revenue AND eg.estimate_type = 'treatment'::text AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR eg.sent_at::date >= lb.first_ga_touch_time::date))) AS has_estimate_approved,
     (EXISTS ( SELECT 1
            FROM hcp_jobs j
           WHERE (j.hcp_customer_id = ANY (lb.all_ids)) AND j.record_status = 'active'::text AND j.work_category = 'treatment'::text AND (j.status = ANY (ARRAY['scheduled'::text, 'complete rated'::text, 'complete unrated'::text, 'in progress'::text])) AND j.total_amount_cents >= 100000 AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR COALESCE(j.scheduled_at, j.hcp_created_at) >= lb.first_ga_touch_time))
      OR EXISTS ( SELECT 1
            FROM v_estimate_groups eg
-          WHERE (eg.hcp_customer_id = ANY (lb.all_ids)) AND eg.status = 'approved'::text AND eg.count_revenue AND eg.estimate_type = 'treatment'::text AND GREATEST(eg.approved_total_cents, eg.highest_option_cents) >= 100000 AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR eg.sent_at::date >= lb.first_ga_touch_time::date))) AS has_job_scheduled,
+          WHERE (eg.hcp_customer_id = ANY (lb.all_ids)) AND eg.status = 'approved'::text AND eg.count_revenue AND eg.estimate_type = 'treatment'::text AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR eg.sent_at::date >= lb.first_ga_touch_time::date))) AS has_job_scheduled,
     (EXISTS ( SELECT 1
            FROM hcp_jobs j
           WHERE (j.hcp_customer_id = ANY (lb.all_ids)) AND j.record_status = 'active'::text AND j.work_category = 'treatment'::text AND (j.status = ANY (ARRAY['complete rated'::text, 'complete unrated'::text])) AND j.total_amount_cents >= 100000 AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR COALESCE(j.scheduled_at, j.hcp_created_at) >= lb.first_ga_touch_time))
@@ -188,13 +188,13 @@
            FROM hcp_invoices inv
           WHERE (inv.hcp_customer_id = ANY (lb.all_ids)) AND (inv.status <> ALL (ARRAY['canceled'::text, 'voided'::text])) AND inv.amount_cents > 0 AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR inv.created_at >= lb.first_ga_touch_time))) OR (EXISTS ( SELECT 1
            FROM v_estimate_groups eg
-          WHERE (eg.hcp_customer_id = ANY (lb.all_ids)) AND eg.status = 'approved'::text AND eg.count_revenue AND eg.estimate_type = 'treatment'::text AND GREATEST(eg.approved_total_cents, eg.highest_option_cents) >= 100000 AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR eg.sent_at::date >= lb.first_ga_touch_time::date))) AS has_invoice,
+          WHERE (eg.hcp_customer_id = ANY (lb.all_ids)) AND eg.status = 'approved'::text AND eg.count_revenue AND eg.estimate_type = 'treatment'::text AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR eg.sent_at::date >= lb.first_ga_touch_time::date))) AS has_invoice,
     COALESCE(( SELECT sum(eg.highest_option_cents) AS sum
            FROM v_estimate_groups eg
           WHERE (eg.hcp_customer_id = ANY (lb.all_ids)) AND (eg.status = ANY (ARRAY['sent'::text, 'approved'::text, 'declined'::text])) AND eg.count_revenue AND eg.estimate_type = 'treatment'::text AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR eg.sent_at::date >= lb.first_ga_touch_time::date)), 0::bigint) AS est_sent_cents,
     COALESCE(( SELECT sum(eg.approved_total_cents) AS sum
            FROM v_estimate_groups eg
-          WHERE (eg.hcp_customer_id = ANY (lb.all_ids)) AND eg.status = 'approved'::text AND eg.count_revenue AND eg.estimate_type = 'treatment'::text AND GREATEST(eg.approved_total_cents, eg.highest_option_cents) >= 100000 AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR eg.sent_at::date >= lb.first_ga_touch_time::date)), 0::numeric) AS est_approved_cents,
+          WHERE (eg.hcp_customer_id = ANY (lb.all_ids)) AND eg.status = 'approved'::text AND eg.count_revenue AND eg.estimate_type = 'treatment'::text AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR eg.sent_at::date >= lb.first_ga_touch_time::date)), 0::numeric) AS est_approved_cents,
     COALESCE(( SELECT sum(j.total_amount_cents) AS sum
            FROM hcp_jobs j
           WHERE (j.hcp_customer_id = ANY (lb.all_ids)) AND j.record_status = 'active'::text AND (j.status <> ALL (ARRAY['user canceled'::text, 'pro canceled'::text])) AND j.count_revenue = true AND (lb.lead_source <> 'google_ads'::text OR lb.first_ga_touch_time IS NULL OR COALESCE(j.scheduled_at, j.hcp_created_at) >= lb.first_ga_touch_time)), 0::bigint) AS job_cents,

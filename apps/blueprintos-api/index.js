@@ -2379,6 +2379,16 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
         COALESCE(
           (SELECT get_source_label(c.source, c.source_name, c.gclid) FROM calls c WHERE c.callrail_id = hc.callrail_id LIMIT 1),
           (SELECT get_source_label(f.source, NULL, f.gclid) FROM form_submissions f WHERE f.callrail_id = hc.callrail_id LIMIT 1),
+          -- Webflow form submissions (callrail_id LIKE 'WF_%' — came through FormBridge, not CallRail)
+          (SELECT get_source_label(NULL, NULL, ws.gclid) FROM webflow_submissions ws
+            WHERE ws.customer_id = hc.customer_id AND ws.phone_normalized = hc.phone_normalized
+            AND ws.gclid IS NOT NULL AND ws.gclid != ''
+            LIMIT 1),
+          -- GHL contact with GCLID (Google Ads proof from any channel)
+          (SELECT get_source_label(gc.source, NULL, gc.gclid) FROM ghl_contacts gc
+            WHERE gc.customer_id = hc.customer_id AND gc.phone_normalized = hc.phone_normalized
+            AND gc.gclid IS NOT NULL AND gc.gclid != ''
+            LIMIT 1),
           'Unknown'
         ) as source_label,
         -- Call/form info

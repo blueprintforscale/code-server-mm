@@ -877,8 +877,8 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
           CASE WHEN NOT COALESCE(exclude_from_ga_roas, false) THEN
             CASE
               WHEN treat_invoice_cents > 0 OR est_approved_cents > 0
-                THEN insp_invoice_cents + GREATEST(treat_invoice_cents, est_approved_cents)
-              ELSE job_cents + insp_invoice_cents
+                THEN GREATEST(insp_invoice_cents, insp_record_cents) + GREATEST(treat_invoice_cents, est_approved_cents)
+              ELSE job_cents + GREATEST(insp_invoice_cents, insp_record_cents)
             END
           ELSE 0 END
         ), 0) / 100.0 as closed_rev,
@@ -1053,8 +1053,8 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
         CASE WHEN NOT COALESCE(fl.exclude_from_ga_roas, false) THEN
           CASE
             WHEN fl.treat_invoice_cents > 0 OR fl.est_approved_cents > 0
-              THEN fl.insp_invoice_cents + GREATEST(fl.treat_invoice_cents, fl.est_approved_cents)
-            ELSE fl.job_cents + fl.insp_invoice_cents
+              THEN GREATEST(fl.insp_invoice_cents, fl.insp_record_cents) + GREATEST(fl.treat_invoice_cents, fl.est_approved_cents)
+            ELSE fl.job_cents + GREATEST(fl.insp_invoice_cents, fl.insp_record_cents)
           END
         ELSE 0 END
       ), 0) / 100.0 as total
@@ -2456,10 +2456,40 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
         -- Revenue
         COALESCE((SELECT SUM(eg.approved_total_cents) FROM v_estimate_groups eg
           WHERE eg.hcp_customer_id = ANY(pg.all_ids) AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment'), 0) / 100.0 as approved_revenue,
-        COALESCE((SELECT SUM(i.amount_cents) FROM hcp_invoices i
-          WHERE i.hcp_customer_id = ANY(pg.all_ids) AND i.status NOT IN ('canceled','voided') AND i.amount_cents > 0), 0) / 100.0 as invoiced_revenue,
-        COALESCE((SELECT json_agg(json_build_object('amount', i.amount_cents / 100.0, 'type', i.invoice_type, 'status', i.status) ORDER BY i.amount_cents) FROM hcp_invoices i
-          WHERE i.hcp_customer_id = ANY(pg.all_ids) AND i.status NOT IN ('canceled','voided') AND i.amount_cents > 0), '[]'::json) as invoice_breakdown,
+        -- Invoiced revenue: real hcp_invoices + inspection record amounts when no matching invoice exists
+        -- GREATEST per bucket avoids double-counting when both invoice and record are populated
+        (COALESCE((SELECT SUM(i.amount_cents) FROM hcp_invoices i
+           WHERE i.hcp_customer_id = ANY(pg.all_ids) AND i.status NOT IN ('canceled','voided') AND i.amount_cents > 0), 0)
+         + GREATEST(
+             COALESCE((SELECT SUM(ins.total_amount_cents) FROM hcp_inspections ins
+               WHERE ins.hcp_customer_id = ANY(pg.all_ids) AND ins.record_status = 'active'
+                 AND ins.status IN ('complete rated','complete unrated') AND ins.count_revenue = true
+                 AND ins.total_amount_cents > 0), 0)
+             - COALESCE((SELECT SUM(i.amount_cents) FROM hcp_invoices i
+               WHERE i.hcp_customer_id = ANY(pg.all_ids) AND i.status NOT IN ('canceled','voided')
+                 AND i.invoice_type = 'inspection' AND i.amount_cents > 0), 0),
+             0
+           )
+        ) / 100.0 as invoiced_revenue,
+        -- Invoice breakdown: combines hcp_invoices (real) + hcp_inspections.total_amount_cents (recorded on job, not invoiced)
+        COALESCE((
+          SELECT json_agg(item ORDER BY (item->>'amount')::numeric) FROM (
+            SELECT json_build_object('amount', i.amount_cents / 100.0, 'type', i.invoice_type, 'status', i.status) as item
+            FROM hcp_invoices i
+            WHERE i.hcp_customer_id = ANY(pg.all_ids) AND i.status NOT IN ('canceled','voided') AND i.amount_cents > 0
+            UNION ALL
+            -- Include inspection records that have revenue but no inspection invoice (Alemania/Bryant pattern)
+            SELECT json_build_object('amount', ins.total_amount_cents / 100.0, 'type', 'inspection (on job)', 'status', ins.status)
+            FROM hcp_inspections ins
+            WHERE ins.hcp_customer_id = ANY(pg.all_ids) AND ins.record_status = 'active'
+              AND ins.status IN ('complete rated','complete unrated') AND ins.count_revenue = true
+              AND ins.total_amount_cents > 0
+              -- Only add if this inspection amount isn't already covered by an inspection invoice
+              AND ins.total_amount_cents > COALESCE((SELECT SUM(i.amount_cents) FROM hcp_invoices i
+                WHERE i.hcp_customer_id = ins.hcp_customer_id AND i.status NOT IN ('canceled','voided')
+                  AND i.invoice_type = 'inspection' AND i.amount_cents > 0), 0)
+          ) items
+        ), '[]'::json) as invoice_breakdown,
         -- Estimate pipeline value (sent but not yet approved)
         COALESCE((SELECT SUM(eg.highest_option_cents) FROM v_estimate_groups eg
           WHERE eg.hcp_customer_id = ANY(pg.all_ids) AND eg.status IN ('sent','approved','declined') AND eg.count_revenue AND eg.estimate_type = 'treatment'), 0) / 100.0 as estimate_value,
@@ -2707,7 +2737,7 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
         (fl.has_job_completed OR fl.treat_invoice_cents > 0) as job_completed,
         (NOT fl.has_job_completed AND fl.treat_invoice_cents > 0) as job_completed_inferred,
         fl.has_invoice as revenue_closed,
-        fl.est_approved_cents / 100.0 as approved_revenue, (fl.insp_invoice_cents + fl.treat_invoice_cents) / 100.0 as invoiced_revenue,
+        fl.est_approved_cents / 100.0 as approved_revenue, (GREATEST(fl.insp_invoice_cents, fl.insp_record_cents) + fl.treat_invoice_cents) / 100.0 as invoiced_revenue,
         '[]'::json as invoice_breakdown, fl.est_sent_cents / 100.0 as estimate_value,
         NULL as job_description, NULL as service_address, fl.client_flag_reason, NULL::timestamptz as client_flag_at,
         NULL as lost_reason, false as reactivated
@@ -3437,8 +3467,8 @@ fastify.get('/clients/:customerId/monthly-trend', async (request) => {
         COUNT(DISTINCT fl.phone_normalized) FILTER (WHERE fl.has_estimate_approved) as estimates_approved,
         COALESCE(SUM(
           CASE WHEN fl.treat_invoice_cents > 0 OR fl.est_approved_cents > 0
-            THEN fl.insp_invoice_cents + GREATEST(fl.treat_invoice_cents, fl.est_approved_cents)
-            ELSE fl.job_cents + fl.insp_invoice_cents END
+            THEN GREATEST(fl.insp_invoice_cents, fl.insp_record_cents) + GREATEST(fl.treat_invoice_cents, fl.est_approved_cents)
+            ELSE fl.job_cents + GREATEST(fl.insp_invoice_cents, fl.insp_record_cents) END
         ), 0) / 100.0 as revenue,
         COALESCE(SUM(fl.invoice_cents + fl.insp_invoice_cents), 0) / 100.0 as invoice_revenue
       FROM fl_with_lead_date fl

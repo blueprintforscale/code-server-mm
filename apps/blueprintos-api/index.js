@@ -2756,28 +2756,44 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
       FROM mv_funnel_leads fl
       WHERE fl.customer_id = $1 AND fl.phone_normalized = ANY($2) AND fl.lead_source = $3
       UNION ALL
+      -- Unmatched calls: earliest in-range call per phone (no first_call restriction,
+      -- so reactivated leads that passed the funnel's 60-day rule still show up)
       SELECT NULL, COALESCE(c.customer_name, 'Caller ID: ' || normalize_phone(c.caller_phone)),
-        normalize_phone(c.caller_phone), c.start_time, 'unmatched', 'call',
+        c.phone_norm, c.start_time, 'unmatched', 'call',
         CASE WHEN c.answered THEN 'answered' ELSE 'missed' END, c.duration,
         get_source_label(c.source, c.source_name, c.gclid) as source_label,
         false, false, false, false, false, false, false, false, false, false, 0, 0, '[]'::json, 0,
         NULL, NULL, NULL, NULL, NULL, false
-      FROM calls c WHERE c.customer_id IN (SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1)
-        AND normalize_phone(c.caller_phone) = ANY($2) AND c.first_call = true
-        AND c.start_time::date BETWEEN $4::date AND $5::date
-        AND NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl WHERE fl.customer_id = $1 AND fl.phone_normalized = normalize_phone(c.caller_phone))
+      FROM (
+        SELECT DISTINCT ON (normalize_phone(caller_phone))
+          normalize_phone(caller_phone) as phone_norm,
+          customer_name, caller_phone, start_time, answered, duration, source, source_name, gclid
+        FROM calls
+        WHERE customer_id IN (SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1)
+          AND normalize_phone(caller_phone) = ANY($2)
+          AND start_time::date BETWEEN $4::date AND $5::date
+        ORDER BY normalize_phone(caller_phone), start_time ASC
+      ) c WHERE NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl WHERE fl.customer_id = $1 AND fl.phone_normalized = c.phone_norm)
       UNION ALL
-      SELECT NULL, f.customer_name, normalize_phone(f.customer_phone), f.submitted_at, 'unmatched', 'form',
+      -- Unmatched forms: earliest in-range form submission per phone
+      SELECT NULL, f.customer_name, f.phone_norm, f.submitted_at, 'unmatched', 'form',
         NULL, NULL,
         get_source_label(f.source, NULL, f.gclid) as source_label,
         false, false, false, false, false, false, false, false, false, false, 0, 0, '[]'::json, 0,
         NULL, NULL, NULL, NULL, NULL, false
-      FROM form_submissions f WHERE f.customer_id IN (SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1)
-        AND normalize_phone(f.customer_phone) = ANY($2)
-        AND f.submitted_at::date BETWEEN $4::date AND $5::date
-        AND NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl WHERE fl.customer_id = $1 AND fl.phone_normalized = normalize_phone(f.customer_phone))
+      FROM (
+        SELECT DISTINCT ON (normalize_phone(customer_phone))
+          normalize_phone(customer_phone) as phone_norm,
+          customer_name, customer_phone, submitted_at, source, gclid
+        FROM form_submissions
+        WHERE customer_id IN (SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1)
+          AND normalize_phone(customer_phone) = ANY($2)
+          AND submitted_at::date BETWEEN $4::date AND $5::date
+        ORDER BY normalize_phone(customer_phone), submitted_at ASC
+      ) f WHERE NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl WHERE fl.customer_id = $1 AND fl.phone_normalized = f.phone_norm)
         AND NOT EXISTS (SELECT 1 FROM calls c WHERE c.customer_id IN (SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1)
-          AND normalize_phone(c.caller_phone) = normalize_phone(f.customer_phone) AND c.first_call = true)
+          AND normalize_phone(c.caller_phone) = f.phone_norm
+          AND c.start_time::date BETWEEN $4::date AND $5::date)
     `, [customerId, missingPhones, source === 'google_ads' ? 'google_ads' : source === 'gbp' ? 'gbp' : source === 'seo' ? 'seo' : source === 'referral' ? 'referral' : 'other', startDate, endDate]);
     const seen = new Set();
     for (const row of missingRows) {

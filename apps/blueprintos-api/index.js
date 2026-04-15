@@ -2894,11 +2894,13 @@ async function getJobberLeadSpreadsheet(pool, customerId, startDate, endDate, so
           AND NOT (LOWER(j.title) LIKE '%assessment%' OR LOWER(j.title) LIKE '%instascope%' OR LOWER(j.title) LIKE '%inspection%'
             OR LOWER(j.title) LIKE '%mold test%' OR LOWER(j.title) LIKE '%air quality%' OR LOWER(j.title) LIKE '%air test%')
         ) as job_scheduled,
+        false as job_scheduled_inferred,
         EXISTS (SELECT 1 FROM jobber_jobs j WHERE j.jobber_customer_id = jc.jobber_customer_id AND j.customer_id = jc.customer_id
           AND j.status IN ('late', 'requires_invoicing')
           AND NOT (LOWER(j.title) LIKE '%assessment%' OR LOWER(j.title) LIKE '%instascope%' OR LOWER(j.title) LIKE '%inspection%'
             OR LOWER(j.title) LIKE '%mold test%' OR LOWER(j.title) LIKE '%air quality%' OR LOWER(j.title) LIKE '%air test%')
         ) as job_completed,
+        false as job_completed_inferred,
         EXISTS (SELECT 1 FROM jobber_invoices i WHERE i.jobber_customer_id = jc.jobber_customer_id AND i.customer_id = jc.customer_id AND i.total_cents > 0) as revenue_closed,
         -- Revenue
         COALESCE((SELECT SUM(q.total_cents) FROM jobber_quotes q WHERE q.jobber_customer_id = jc.jobber_customer_id AND q.customer_id = jc.customer_id

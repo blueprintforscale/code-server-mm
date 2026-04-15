@@ -2729,6 +2729,18 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
             'Caller ID: ' || fl.phone_normalized)) as name,
         fl.phone_normalized as phone, fl.hcp_created_at as contact_date,
         'matched' as match_status, 'call' as lead_type, NULL as answer_status, NULL::int as duration,
+        -- Source label via COALESCE chain (same pattern as hcp_leads CTE)
+        COALESCE(
+          (SELECT get_source_label(c.source, c.source_name, c.gclid) FROM calls c WHERE c.callrail_id = fl.callrail_id LIMIT 1),
+          (SELECT get_source_label(f.source, NULL, f.gclid) FROM form_submissions f WHERE f.callrail_id = fl.callrail_id LIMIT 1),
+          (SELECT get_source_label(NULL, NULL, ws.gclid) FROM webflow_submissions ws
+            WHERE ws.customer_id = fl.customer_id AND ws.phone_normalized = fl.phone_normalized
+              AND ws.gclid IS NOT NULL AND ws.gclid != '' LIMIT 1),
+          (SELECT get_source_label(gc.source, NULL, gc.gclid) FROM ghl_contacts gc
+            WHERE gc.customer_id = fl.customer_id AND gc.phone_normalized = fl.phone_normalized
+              AND gc.gclid IS NOT NULL AND gc.gclid != '' LIMIT 1),
+          'Unknown'
+        ) as source_label,
         fl.has_inspection_scheduled as inspection_scheduled, fl.has_inspection_completed as inspection_completed,
         false as inspection_completed_inferred,
         fl.has_estimate_sent as estimate_sent, fl.has_estimate_approved as estimate_approved,
@@ -2747,21 +2759,26 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
       SELECT NULL, COALESCE(c.customer_name, 'Caller ID: ' || normalize_phone(c.caller_phone)),
         normalize_phone(c.caller_phone), c.start_time, 'unmatched', 'call',
         CASE WHEN c.answered THEN 'answered' ELSE 'missed' END, c.duration,
+        get_source_label(c.source, c.source_name, c.gclid) as source_label,
         false, false, false, false, false, false, false, false, false, false, 0, 0, '[]'::json, 0,
         NULL, NULL, NULL, NULL, NULL, false
       FROM calls c WHERE c.customer_id IN (SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1)
         AND normalize_phone(c.caller_phone) = ANY($2) AND c.first_call = true
+        AND c.start_time::date BETWEEN $4::date AND $5::date
         AND NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl WHERE fl.customer_id = $1 AND fl.phone_normalized = normalize_phone(c.caller_phone))
       UNION ALL
       SELECT NULL, f.customer_name, normalize_phone(f.customer_phone), f.submitted_at, 'unmatched', 'form',
-        NULL, NULL, false, false, false, false, false, false, false, false, false, false, 0, 0, '[]'::json, 0,
+        NULL, NULL,
+        get_source_label(f.source, NULL, f.gclid) as source_label,
+        false, false, false, false, false, false, false, false, false, false, 0, 0, '[]'::json, 0,
         NULL, NULL, NULL, NULL, NULL, false
       FROM form_submissions f WHERE f.customer_id IN (SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1)
         AND normalize_phone(f.customer_phone) = ANY($2)
+        AND f.submitted_at::date BETWEEN $4::date AND $5::date
         AND NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl WHERE fl.customer_id = $1 AND fl.phone_normalized = normalize_phone(f.customer_phone))
         AND NOT EXISTS (SELECT 1 FROM calls c WHERE c.customer_id IN (SELECT customer_id FROM clients WHERE customer_id = $1 OR parent_customer_id = $1)
           AND normalize_phone(c.caller_phone) = normalize_phone(f.customer_phone) AND c.first_call = true)
-    `, [customerId, missingPhones, source === 'google_ads' ? 'google_ads' : source === 'gbp' ? 'gbp' : source === 'seo' ? 'seo' : source === 'referral' ? 'referral' : 'other']);
+    `, [customerId, missingPhones, source === 'google_ads' ? 'google_ads' : source === 'gbp' ? 'gbp' : source === 'seo' ? 'seo' : source === 'referral' ? 'referral' : 'other', startDate, endDate]);
     const seen = new Set();
     for (const row of missingRows) {
       if (!seen.has(row.phone)) { seen.add(row.phone); filtered.push(row); }

@@ -410,7 +410,8 @@ fastify.get('/groups/:slug/funnel', async (request) => {
     sourceWhere,
     cidCTE,
     extraSpamKeywords,
-    memberIds              // full array — used for projected_closes side query
+    memberIds,             // full array — used for projected_closes side query
+    true                   // applyClientStartCap: floor each row at its own client.start_date
   );
 
   result.group = {
@@ -634,17 +635,25 @@ async function getLsaFunnel(pool, customerId, params, dateWhere, cidCTE) {
       WHERE l.customer_id = $1
         ${lsaDateWhere}
     ),
-    -- LSA leads with HCP match (for funnel progress)
+    -- LSA-attributed HCP customers (uses same 3-path attribution as drawer at /lead-spreadsheet)
+    -- Path 1: attribution_override='lsa' (manual classification)
+    -- Path 2: callrail_id points to an LSA-source call
+    -- Path 3: lsa_leads.hcp_customer_id matches (for non-anonymized LSA leads)
     lsa_matched AS (
-      SELECT DISTINCT ON (la.phone) la.phone, la.hcp_customer_id,
-        pg.all_ids
-      FROM lsa_all la
-      JOIN hcp_customers hc ON hc.hcp_customer_id = la.hcp_customer_id
+      SELECT DISTINCT hc.phone_normalized AS phone, pg.all_ids
+      FROM hcp_customers hc
       JOIN (SELECT customer_id, phone_normalized, array_agg(hcp_customer_id) as all_ids
             FROM hcp_customers WHERE customer_id = $1 GROUP BY customer_id, phone_normalized) pg
         ON pg.phone_normalized = hc.phone_normalized AND pg.customer_id = hc.customer_id
-      WHERE la.hcp_customer_id IS NOT NULL AND la.phone IS NOT NULL
-      ORDER BY la.phone, la.lead_creation_time ASC
+      WHERE hc.customer_id = $1
+        ${hcpDateWhere}
+        AND hc.phone_normalized IS NOT NULL
+        AND (
+          hc.attribution_override = 'lsa'
+          OR EXISTS (SELECT 1 FROM calls ca WHERE ca.callrail_id = hc.callrail_id AND (ca.source_name = 'LSA' OR ca.source = 'LSA'))
+          OR EXISTS (SELECT 1 FROM lsa_leads l WHERE l.hcp_customer_id = hc.hcp_customer_id AND l.customer_id = hc.customer_id)
+          OR EXISTS (SELECT 1 FROM lsa_leads l WHERE l.contact_phone_normalized = hc.phone_normalized AND l.customer_id = hc.customer_id)
+        )
     ),
     -- Funnel counts from HCP data for matched LSA leads
     funnel AS (
@@ -740,11 +749,15 @@ async function getLsaFunnel(pool, customerId, params, dateWhere, cidCTE) {
 
 // Fast HCP funnel using mv_funnel_leads materialized view
 // Quality lead logic aligned with risk dashboard: 20% abandoned rule, CRM activity rescue, unmatched spam filtering
-async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, cidCTE, extraSpamKeywords = null, customerIds = null) {
+async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, cidCTE, extraSpamKeywords = null, customerIds = null, applyClientStartCap = false) {
   // customerIds (array): full set for client_ids — defaults to [customerId] for single-client routes.
   // Group routes pass the full member list. The main SQL uses `client_ids` (built in cidCTE) so any
   // place that filters by customer_id covers the whole set; only side queries (projected_closes) need
   // the JS-side array.
+  // applyClientStartCap: when true (group routes), each row is additionally
+  // floored at its own client.start_date — so a recently-onboarded member
+  // doesn't bring pre-tracking historical data into the combined view.
+  // Single-client routes do this via clampDateFrom() before the call.
   customerIds = customerIds || [customerId];
 
   // Map source filter to mv_funnel_leads.lead_source
@@ -765,9 +778,15 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
     mvSourceWhere = `AND fl.lead_source = 'referral'`;
   }
 
-  const mvDateWhere = dateWhere.replace(/lead_date/g, 'fl.hcp_created_at::date');
-  const crDateWhere = dateWhere.replace(/lead_date/g, 'c2.start_time::date');
-  const fmDateWhere = dateWhere.replace(/lead_date/g, 'f2.submitted_at::date');
+  let mvDateWhere = dateWhere.replace(/lead_date/g, 'fl.hcp_created_at::date');
+  let crDateWhere = dateWhere.replace(/lead_date/g, 'c2.start_time::date');
+  let fmDateWhere = dateWhere.replace(/lead_date/g, 'f2.submitted_at::date');
+  if (applyClientStartCap) {
+    // Per-row cap: each lead/call/form must be on or after its client's start_date.
+    mvDateWhere += ` AND fl.hcp_created_at::date >= (SELECT start_date FROM clients WHERE customer_id = fl.customer_id)`;
+    crDateWhere += ` AND c2.start_time::date >= (SELECT start_date FROM clients WHERE customer_id = c2.customer_id)`;
+    fmDateWhere += ` AND f2.submitted_at::date >= (SELECT start_date FROM clients WHERE customer_id = f2.customer_id)`;
+  }
 
   // Source filters for unmatched calls/forms
   // NOTE: GBP check must come before GA because GBP filter also contains 'is_google_ads_call' (in NOT)
@@ -836,6 +855,19 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
         AND status IN ('complete rated','complete unrated')
         AND total_amount_cents >= 100000
     ),
+    -- Customers with ANY active/segment non-canceled treatment job (including
+    -- 'needs scheduling'). Used to guard the inference paths in job_scheduled
+    -- and job_completed: if HCP has an explicit job state, we trust it and
+    -- don't let approved-estimate or treatment-invoice override it.
+    customers_with_active_treatment_job AS (
+      SELECT DISTINCT hcp_customer_id
+      FROM hcp_jobs
+      WHERE customer_id IN (SELECT customer_id FROM client_ids)
+        AND record_status IN ('active','segment')
+        AND work_category = 'treatment'
+        AND total_amount_cents >= 100000
+        AND status NOT IN ('user canceled','pro canceled')
+    ),
     -- Main funnel from materialized view
     matched AS (
       SELECT fl.*
@@ -859,14 +891,19 @@ async function getHcpFunnel(pool, customerId, params, dateWhere, sourceWhere, ci
         COUNT(*) FILTER (WHERE has_estimate_approved) as estimate_approved,
         COUNT(*) FILTER (
           WHERE has_job_scheduled
-            OR has_estimate_approved
-            OR treat_invoice_cents > 0
             OR hcp_customer_id IN (SELECT hcp_customer_id FROM segment_scheduled_customers)
+            OR (
+              (has_estimate_approved OR treat_invoice_cents > 0)
+              AND hcp_customer_id NOT IN (SELECT hcp_customer_id FROM customers_with_active_treatment_job)
+            )
         ) as job_scheduled,
         COUNT(*) FILTER (
           WHERE has_job_completed
-            OR treat_invoice_cents > 0
             OR hcp_customer_id IN (SELECT hcp_customer_id FROM segment_completed_customers)
+            OR (
+              treat_invoice_cents > 0
+              AND hcp_customer_id NOT IN (SELECT hcp_customer_id FROM customers_with_active_treatment_job)
+            )
         ) as job_completed,
         COUNT(*) FILTER (WHERE has_invoice) as revenue_closed,
         COUNT(*) FILTER (WHERE has_estimate_sent AND NOT has_estimate_approved AND NOT has_invoice) as open_estimate_count,
@@ -1878,7 +1915,7 @@ fastify.get('/clients/:customerId/leads', async (request) => {
         normalize_phone(c.caller_phone) as phone,
         'call' as type,
         c.duration,
-        COALESCE(c.ai_answered, CASE WHEN c.answered THEN 'answered' ELSE 'missed' END) as answer_status,
+        c.classified_status as answer_status,
         c.source_name,
         get_source_label(c.source, c.source_name, c.gclid) as source_label,
         c.callrail_id
@@ -2298,10 +2335,11 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
   } else if (source === 'lsa') {
     attributionWhere = `AND (
       hc.attribution_override = 'lsa'
-      OR EXISTS (SELECT 1 FROM calls ca WHERE ca.callrail_id = hc.callrail_id AND ca.source_name = 'LSA')
+      OR EXISTS (SELECT 1 FROM calls ca WHERE ca.callrail_id = hc.callrail_id AND (ca.source_name = 'LSA' OR ca.source = 'LSA'))
       OR EXISTS (SELECT 1 FROM lsa_leads l WHERE l.hcp_customer_id = hc.hcp_customer_id AND l.customer_id = hc.customer_id)
+      OR EXISTS (SELECT 1 FROM lsa_leads l WHERE l.contact_phone_normalized = hc.phone_normalized AND l.customer_id = hc.customer_id)
     )`;
-    unmatchedSourceWhere = `AND c.source_name = 'LSA'`;
+    unmatchedSourceWhere = `AND (c.source_name = 'LSA' OR c.source = 'LSA')`;
   } else if (source === 'referral') {
     attributionWhere = `AND (
       hc.attribution_override = 'referral'
@@ -2311,15 +2349,13 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
     )`;
     unmatchedSourceWhere = `AND 1=0`;
   } else if (source === 'seo') {
-    // SEO: any non-paid call/form attribution. Catches GBP + Organic + Direct + ChatGPT + everything organic.
-    attributionWhere = `AND (
-      hc.attribution_override = 'seo'
-      OR EXISTS (SELECT 1 FROM calls ca WHERE ca.callrail_id = hc.callrail_id AND NOT is_paid_source(ca.source))
-      OR EXISTS (SELECT 1 FROM form_submissions fs WHERE fs.customer_id = hc.customer_id
-        AND (fs.callrail_id = hc.callrail_id OR fs.phone_normalized = hc.phone_normalized
-          OR (hc.email IS NOT NULL AND LOWER(fs.customer_email) = LOWER(hc.email)))
-        AND NOT is_paid_source(fs.source))
-    )`;
+    // SEO: match funnel card mv_funnel_leads filter for drawer==card parity.
+    attributionWhere = `AND EXISTS (
+      SELECT 1 FROM mv_funnel_leads fl
+      WHERE fl.customer_id IN (SELECT customer_id FROM client_ids)
+        AND fl.hcp_customer_id = hc.hcp_customer_id
+        AND fl.lead_source NOT IN ('google_ads', 'lsa'))
+    `;
     unmatchedSourceWhere = `AND NOT is_paid_source(c.source)`;
   } else {
     // Default: Google Ads
@@ -2397,61 +2433,89 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
           WHEN hc.callrail_id LIKE 'FRM%' THEN 'form'
           ELSE 'call'
         END as lead_type,
-        (SELECT COALESCE(ca.ai_answered, CASE WHEN ca.answered THEN 'answered' ELSE 'missed' END)
-         FROM calls ca WHERE ca.callrail_id = hc.callrail_id LIMIT 1) as answer_status,
+        (SELECT ca.classified_status FROM calls ca WHERE ca.callrail_id = hc.callrail_id LIMIT 1) as answer_status,
         (SELECT ca.duration FROM calls ca WHERE ca.callrail_id = hc.callrail_id LIMIT 1) as duration,
-        -- Funnel stages
-        EXISTS (SELECT 1 FROM hcp_inspections i WHERE i.hcp_customer_id = ANY(pg.all_ids)
-          AND i.record_status = 'active' AND (i.status IN ('scheduled','complete rated','complete unrated','in progress') OR i.scheduled_at IS NOT NULL OR i.inferred_complete = true)) as inspection_scheduled,
-        EXISTS (SELECT 1 FROM hcp_inspections i WHERE i.hcp_customer_id = ANY(pg.all_ids)
-          AND i.record_status = 'active' AND (i.status IN ('complete rated','complete unrated') OR i.inferred_complete = true)) as inspection_completed,
-        -- Inferred flags
-        EXISTS (SELECT 1 FROM hcp_inspections i WHERE i.hcp_customer_id = ANY(pg.all_ids)
+        -- Stage flags scope to hc.hcp_customer_id (the GA-attributed record),
+        -- NOT the phone group, so card and drawer count the same set. The mv
+        -- applies a first-GA-touch date floor that excludes pre-attribution
+        -- records; ORing across phone group breaks that — e.g. Zach
+        -- LefIaivre has a 2024 record AND a 2026 GA-attributed record;
+        -- pg.all_ids would let his 2024 completed treatment be counted under
+        -- his 2026 lead. Funnel tile checks per-mv-row, so drawer must too.
+        EXISTS (SELECT 1 FROM mv_funnel_leads fl
+          WHERE fl.hcp_customer_id = hc.hcp_customer_id AND fl.has_inspection_scheduled) as inspection_scheduled,
+        EXISTS (SELECT 1 FROM mv_funnel_leads fl
+          WHERE fl.hcp_customer_id = hc.hcp_customer_id AND fl.has_inspection_completed) as inspection_completed,
+        -- Inferred flag: inspection completion via inspection-record's
+        -- inferred_complete column (not surfaced in mv). Kept inline.
+        EXISTS (SELECT 1 FROM hcp_inspections i WHERE i.hcp_customer_id = hc.hcp_customer_id
           AND i.record_status = 'active' AND i.inferred_complete = true
           AND i.status NOT IN ('complete rated','complete unrated')) as inspection_completed_inferred,
-        EXISTS (SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(pg.all_ids)
-          AND eg.status IN ('sent','approved','declined') AND eg.count_revenue AND eg.estimate_type = 'treatment') as estimate_sent,
-        EXISTS (SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(pg.all_ids)
-          AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment') as estimate_approved,
-        (EXISTS (SELECT 1 FROM hcp_jobs j WHERE j.hcp_customer_id = ANY(pg.all_ids)
-          AND j.record_status = 'active' AND j.status IN ('scheduled','complete rated','complete unrated','in progress')
-          AND j.work_category = 'treatment')
-        OR EXISTS (SELECT 1 FROM hcp_job_segments seg WHERE seg.hcp_customer_id = ANY(pg.all_ids)
+        EXISTS (SELECT 1 FROM mv_funnel_leads fl
+          WHERE fl.hcp_customer_id = hc.hcp_customer_id AND fl.has_estimate_sent) as estimate_sent,
+        EXISTS (SELECT 1 FROM mv_funnel_leads fl
+          WHERE fl.hcp_customer_id = hc.hcp_customer_id AND fl.has_estimate_approved) as estimate_approved,
+        -- job_scheduled / job_completed and their _inferred siblings mirror
+        -- the funnel-tile matched_agg (line ~880) exactly:
+        --   real: mv has_job_*  (date-floored, active+segment via mv fix)
+        --     OR a non-parent segment in hcp_job_segments
+        --   inferred: approved-est OR treat-invoice (job_completed: invoice only)
+        --             AND no active/segment non-canceled treatment job in hcp_jobs
+        -- All checks scoped to hc.hcp_customer_id (NOT pg.all_ids) so pre-GA
+        -- records under same phone don't leak in.
+        (EXISTS (SELECT 1 FROM mv_funnel_leads fl
+           WHERE fl.hcp_customer_id = hc.hcp_customer_id AND fl.has_job_scheduled)
+        OR EXISTS (SELECT 1 FROM hcp_job_segments seg WHERE seg.hcp_customer_id = hc.hcp_customer_id
           AND seg.status IN ('scheduled','complete rated','complete unrated','in progress')
           AND seg.total_amount_cents >= 100000)
-        OR EXISTS (SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(pg.all_ids)
-          AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment')
-        OR EXISTS (SELECT 1 FROM hcp_invoices inv WHERE inv.hcp_customer_id = ANY(pg.all_ids)
-          AND inv.status NOT IN ('canceled','voided') AND inv.amount_cents > 0 AND inv.invoice_type = 'treatment')) as job_scheduled,
-        -- Inferred = has approved est OR invoice BUT no real job record (neither hcp_jobs nor hcp_job_segments)
-        (NOT EXISTS (SELECT 1 FROM hcp_jobs j WHERE j.hcp_customer_id = ANY(pg.all_ids)
-          AND j.record_status = 'active' AND j.status IN ('scheduled','complete rated','complete unrated','in progress')
-          AND j.work_category = 'treatment')
-        AND NOT EXISTS (SELECT 1 FROM hcp_job_segments seg WHERE seg.hcp_customer_id = ANY(pg.all_ids)
+        OR (
+          EXISTS (SELECT 1 FROM mv_funnel_leads fl
+            WHERE fl.hcp_customer_id = hc.hcp_customer_id
+            AND (fl.has_estimate_approved OR fl.treat_invoice_cents > 0))
+          AND NOT EXISTS (SELECT 1 FROM hcp_jobs j WHERE j.hcp_customer_id = hc.hcp_customer_id
+            AND j.record_status IN ('active','segment') AND j.work_category = 'treatment'
+            AND j.total_amount_cents >= 100000
+            AND j.status NOT IN ('user canceled','pro canceled'))
+        )) as job_scheduled,
+        (NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl
+           WHERE fl.hcp_customer_id = hc.hcp_customer_id AND fl.has_job_scheduled)
+        AND NOT EXISTS (SELECT 1 FROM hcp_job_segments seg WHERE seg.hcp_customer_id = hc.hcp_customer_id
           AND seg.status IN ('scheduled','complete rated','complete unrated','in progress')
           AND seg.total_amount_cents >= 100000)
-        AND (EXISTS (SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(pg.all_ids)
-          AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment')
-        OR EXISTS (SELECT 1 FROM hcp_invoices inv WHERE inv.hcp_customer_id = ANY(pg.all_ids)
-          AND inv.status NOT IN ('canceled','voided') AND inv.amount_cents > 0 AND inv.invoice_type = 'treatment'))) as job_scheduled_inferred,
-        (EXISTS (SELECT 1 FROM hcp_jobs j WHERE j.hcp_customer_id = ANY(pg.all_ids)
-          AND j.record_status = 'active' AND j.status IN ('complete rated','complete unrated')
-          AND j.work_category = 'treatment')
-        OR EXISTS (SELECT 1 FROM hcp_job_segments seg WHERE seg.hcp_customer_id = ANY(pg.all_ids)
+        AND EXISTS (SELECT 1 FROM mv_funnel_leads fl
+            WHERE fl.hcp_customer_id = hc.hcp_customer_id
+            AND (fl.has_estimate_approved OR fl.treat_invoice_cents > 0))
+        AND NOT EXISTS (SELECT 1 FROM hcp_jobs j WHERE j.hcp_customer_id = hc.hcp_customer_id
+            AND j.record_status IN ('active','segment') AND j.work_category = 'treatment'
+            AND j.total_amount_cents >= 100000
+            AND j.status NOT IN ('user canceled','pro canceled'))) as job_scheduled_inferred,
+        (EXISTS (SELECT 1 FROM mv_funnel_leads fl
+           WHERE fl.hcp_customer_id = hc.hcp_customer_id AND fl.has_job_completed)
+        OR EXISTS (SELECT 1 FROM hcp_job_segments seg WHERE seg.hcp_customer_id = hc.hcp_customer_id
           AND seg.status IN ('complete rated','complete unrated')
           AND seg.total_amount_cents >= 100000)
-        OR EXISTS (SELECT 1 FROM hcp_invoices inv WHERE inv.hcp_customer_id = ANY(pg.all_ids)
-          AND inv.status NOT IN ('canceled','voided') AND inv.amount_cents > 0 AND inv.invoice_type = 'treatment')) as job_completed,
-        (NOT EXISTS (SELECT 1 FROM hcp_jobs j WHERE j.hcp_customer_id = ANY(pg.all_ids)
-          AND j.record_status = 'active' AND j.status IN ('complete rated','complete unrated')
-          AND j.work_category = 'treatment')
-        AND NOT EXISTS (SELECT 1 FROM hcp_job_segments seg WHERE seg.hcp_customer_id = ANY(pg.all_ids)
+        OR (
+          EXISTS (SELECT 1 FROM mv_funnel_leads fl
+            WHERE fl.hcp_customer_id = hc.hcp_customer_id AND fl.treat_invoice_cents > 0)
+          AND NOT EXISTS (SELECT 1 FROM hcp_jobs j WHERE j.hcp_customer_id = hc.hcp_customer_id
+            AND j.record_status IN ('active','segment') AND j.work_category = 'treatment'
+            AND j.total_amount_cents >= 100000
+            AND j.status NOT IN ('user canceled','pro canceled'))
+        )) as job_completed,
+        (NOT EXISTS (SELECT 1 FROM mv_funnel_leads fl
+           WHERE fl.hcp_customer_id = hc.hcp_customer_id AND fl.has_job_completed)
+        AND NOT EXISTS (SELECT 1 FROM hcp_job_segments seg WHERE seg.hcp_customer_id = hc.hcp_customer_id
           AND seg.status IN ('complete rated','complete unrated')
           AND seg.total_amount_cents >= 100000)
-        AND EXISTS (SELECT 1 FROM hcp_invoices inv WHERE inv.hcp_customer_id = ANY(pg.all_ids)
-          AND inv.status NOT IN ('canceled','voided') AND inv.amount_cents > 0 AND inv.invoice_type = 'treatment')) as job_completed_inferred,
-        (EXISTS (SELECT 1 FROM hcp_invoices inv WHERE inv.hcp_customer_id = ANY(pg.all_ids) AND inv.status NOT IN ('canceled','voided') AND inv.amount_cents > 0)
-        OR EXISTS (SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = ANY(pg.all_ids)
+        AND EXISTS (SELECT 1 FROM mv_funnel_leads fl
+            WHERE fl.hcp_customer_id = hc.hcp_customer_id AND fl.treat_invoice_cents > 0)
+        AND NOT EXISTS (SELECT 1 FROM hcp_jobs j WHERE j.hcp_customer_id = hc.hcp_customer_id
+            AND j.record_status IN ('active','segment') AND j.work_category = 'treatment'
+            AND j.total_amount_cents >= 100000
+            AND j.status NOT IN ('user canceled','pro canceled'))) as job_completed_inferred,
+        -- Scoped to hc.hcp_customer_id to match upstream stage flags above.
+        (EXISTS (SELECT 1 FROM hcp_invoices inv WHERE inv.hcp_customer_id = hc.hcp_customer_id AND inv.status NOT IN ('canceled','voided') AND inv.amount_cents > 0)
+        OR EXISTS (SELECT 1 FROM v_estimate_groups eg WHERE eg.hcp_customer_id = hc.hcp_customer_id
           AND eg.status = 'approved' AND eg.count_revenue AND eg.estimate_type = 'treatment')) as revenue_closed,
         -- Revenue
         COALESCE((SELECT SUM(eg.approved_total_cents) FROM v_estimate_groups eg
@@ -2471,6 +2535,21 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
              0
            )
         ) / 100.0 as invoiced_revenue,
+        -- Closed revenue matching the funnel card's ROAS formula (inspection + MAX(treatment invoiced, approved)).
+        -- Pulled directly from mv_funnel_leads cents columns so the drawer total reconciles to the Revenue Closed tile.
+        COALESCE((
+          SELECT
+            CASE
+              WHEN fl.treat_invoice_cents > 0 OR fl.est_approved_cents > 0
+                THEN GREATEST(fl.insp_invoice_cents, fl.insp_record_cents)
+                     + GREATEST(fl.treat_invoice_cents, fl.est_approved_cents)
+              ELSE fl.job_cents + GREATEST(fl.insp_invoice_cents, fl.insp_record_cents)
+            END
+          FROM mv_funnel_leads fl
+          WHERE fl.hcp_customer_id = hc.hcp_customer_id
+            AND NOT COALESCE(fl.exclude_from_ga_roas, false)
+          LIMIT 1
+        ), 0) / 100.0 AS closed_rev,
         -- Invoice breakdown: combines hcp_invoices (real) + hcp_inspections.total_amount_cents (recorded on job, not invoiced)
         COALESCE((
           SELECT json_agg(item ORDER BY (item->>'amount')::numeric) FROM (
@@ -2530,7 +2609,7 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
         'unmatched' as match_status,
         get_source_label(c.source, c.source_name, c.gclid) as source_label,
         'call' as lead_type,
-        COALESCE(c.ai_answered, CASE WHEN c.answered THEN 'answered' ELSE 'missed' END) as answer_status,
+        c.classified_status as answer_status,
         c.duration,
         false as inspection_scheduled,
         false as inspection_completed,
@@ -2544,6 +2623,7 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
         false as revenue_closed,
         0::numeric as approved_revenue,
         0::numeric as invoiced_revenue,
+        0::numeric AS closed_rev,
         '[]'::json as invoice_breakdown,
         0::numeric as estimate_value,
         NULL as job_description,
@@ -2592,6 +2672,7 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
         false as revenue_closed,
         0::numeric as approved_revenue,
         0::numeric as invoiced_revenue,
+        0::numeric AS closed_rev,
         '[]'::json as invoice_breakdown,
         0::numeric as estimate_value,
         NULL as job_description,
@@ -2642,6 +2723,7 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
         false as revenue_closed,
         0::numeric as approved_revenue,
         0::numeric as invoiced_revenue,
+        0::numeric AS closed_rev,
         '[]'::json as invoice_breakdown,
         0::numeric as estimate_value,
         NULL as job_description,
@@ -2692,7 +2774,21 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
   const extraSpam = clientResult.rows[0]?.extra_spam_keywords || null;
   const funnelResult = await getHcpFunnel(pool, customerId, [], funnelDateWhere, sourceWhere, funnelCidCTE, extraSpam);
   
-  const qualityPhones = funnelResult.quality_phones || [];
+  // For LSA, augment quality_phones with ALL lsa_leads phone numbers for this client.
+  // Rationale: getHcpFunnel's quality_phones derives from mv_funnel_leads which doesn't know about
+  // lsa_leads.contact_phone_normalized (CSV-backfilled phones when LSA API is Basic tier).
+  // lsa_leads is Google's source of truth for LSA leads → its phones are ALL legit LSA phones.
+  let qualityPhones = funnelResult.quality_phones || [];
+  if (source === 'lsa') {
+    const { rows: lsaPhonesRows } = await pool.query(`
+      SELECT DISTINCT contact_phone_normalized FROM lsa_leads
+      WHERE customer_id = $1
+        AND contact_phone_normalized IS NOT NULL
+        AND lead_creation_time::date BETWEEN $2::date AND $3::date
+    `, [customerId, startDate, endDate]);
+    const lsaPhones = lsaPhonesRows.map(r => r.contact_phone_normalized);
+    qualityPhones = Array.from(new Set([...qualityPhones, ...lsaPhones]));
+  }
   const qualityPhoneSet = new Set(qualityPhones);
   let filtered = rows.filter(r => r.phone && qualityPhoneSet.has(r.phone));
   
@@ -2823,6 +2919,7 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
 async function getJobberLeadSpreadsheet(pool, customerId, startDate, endDate, source) {
   let jcSourceWhere = '';
   let crSourceWhere = '';
+  let fmSourceWhere = '';
   if (source === 'google_ads') {
     jcSourceWhere = `AND (
       jc.attribution_override = 'google_ads'
@@ -2839,6 +2936,7 @@ async function getJobberLeadSpreadsheet(pool, customerId, startDate, endDate, so
         AND gc.gclid IS NOT NULL AND gc.gclid != '')
     )`;
     crSourceWhere = `AND is_google_ads_call(c.source, c.source_name, c.gclid)`;
+    fmSourceWhere = `AND (f.gclid IS NOT NULL AND f.gclid != '')`;
   }
 
   const { rows } = await pool.query(`
@@ -2856,13 +2954,26 @@ async function getJobberLeadSpreadsheet(pool, customerId, startDate, endDate, so
         jc.phone_normalized as phone,
         jc.jobber_created_at as contact_date,
         'matched' as match_status,
+        -- Source label for badge display
+        COALESCE(
+          (SELECT get_source_label(c.source, c.source_name, c.gclid) FROM calls c WHERE c.callrail_id = jc.callrail_id LIMIT 1),
+          (SELECT get_source_label(f.source, NULL, f.gclid) FROM form_submissions f WHERE f.callrail_id = jc.callrail_id LIMIT 1),
+          (SELECT get_source_label(NULL, NULL, ws.gclid) FROM webflow_submissions ws
+            WHERE ws.customer_id = jc.customer_id AND ws.phone_normalized = jc.phone_normalized
+            AND ws.gclid IS NOT NULL AND ws.gclid != ''
+            LIMIT 1),
+          (SELECT get_source_label(gc.source, NULL, gc.gclid) FROM ghl_contacts gc
+            WHERE gc.customer_id = jc.customer_id AND gc.phone_normalized = jc.phone_normalized
+            AND gc.gclid IS NOT NULL AND gc.gclid != ''
+            LIMIT 1),
+          'Unknown'
+        ) as source_label,
         CASE
           WHEN jc.callrail_id LIKE 'WF_%' THEN 'webflow'
           WHEN jc.callrail_id LIKE 'FRM%' THEN 'form'
           ELSE 'call'
         END as lead_type,
-        (SELECT COALESCE(ca.ai_answered, CASE WHEN ca.answered THEN 'answered' ELSE 'missed' END)
-         FROM calls ca WHERE ca.callrail_id = jc.callrail_id LIMIT 1) as answer_status,
+        (SELECT ca.classified_status FROM calls ca WHERE ca.callrail_id = jc.callrail_id LIMIT 1) as answer_status,
         (SELECT ca.duration FROM calls ca WHERE ca.callrail_id = jc.callrail_id LIMIT 1) as duration,
         -- Inspection: request with assessment OR inspection-titled job
         GREATEST(
@@ -2872,11 +2983,12 @@ async function getJobberLeadSpreadsheet(pool, customerId, startDate, endDate, so
             AND (LOWER(jj.title) LIKE '%assessment%' OR LOWER(jj.title) LIKE '%instascope%' OR LOWER(jj.title) LIKE '%inspection%'
               OR LOWER(jj.title) LIKE '%mold test%' OR LOWER(jj.title) LIKE '%air quality%' OR LOWER(jj.title) LIKE '%air test%')), 0)
         ) > 0 as inspection_scheduled,
+        -- Inspection completed: include 'archived' (matches getJobberFunnel)
         GREATEST(
           COALESCE((SELECT COUNT(*) FROM jobber_requests jr WHERE jr.jobber_customer_id = jc.jobber_customer_id
             AND jr.assessment_completed_at IS NOT NULL), 0),
           COALESCE((SELECT COUNT(*) FROM jobber_jobs jj WHERE jj.jobber_customer_id = jc.jobber_customer_id AND jj.customer_id = jc.customer_id
-            AND jj.status IN ('late', 'requires_invoicing')
+            AND jj.status IN ('late', 'requires_invoicing', 'archived')
             AND (LOWER(jj.title) LIKE '%assessment%' OR LOWER(jj.title) LIKE '%instascope%' OR LOWER(jj.title) LIKE '%inspection%'
               OR LOWER(jj.title) LIKE '%mold test%' OR LOWER(jj.title) LIKE '%air quality%' OR LOWER(jj.title) LIKE '%air test%')), 0)
         ) > 0 as inspection_completed,
@@ -2886,17 +2998,18 @@ async function getJobberLeadSpreadsheet(pool, customerId, startDate, endDate, so
          AND NOT EXISTS (SELECT 1 FROM jobber_requests jr WHERE jr.jobber_customer_id = jc.jobber_customer_id AND jr.assessment_completed_at IS NOT NULL)
         ) as inspection_completed_inferred,
         EXISTS (SELECT 1 FROM jobber_quotes q WHERE q.jobber_customer_id = jc.jobber_customer_id AND q.customer_id = jc.customer_id
-          AND q.status IN ('awaiting_response','approved','converted','changes_requested')) as estimate_sent,
+          AND q.status IN ('awaiting_response','approved','converted','changes_requested') AND q.total_cents >= 100000) as estimate_sent,
         EXISTS (SELECT 1 FROM jobber_quotes q WHERE q.jobber_customer_id = jc.jobber_customer_id AND q.customer_id = jc.customer_id
-          AND q.status IN ('approved','converted')) as estimate_approved,
+          AND q.status IN ('approved','converted') AND q.total_cents >= 100000) as estimate_approved,
+        -- Job scheduled: any treatment job (matches getJobberFunnel — no status exclusion)
         EXISTS (SELECT 1 FROM jobber_jobs j WHERE j.jobber_customer_id = jc.jobber_customer_id AND j.customer_id = jc.customer_id
-          AND j.status NOT IN ('archived')
           AND NOT (LOWER(j.title) LIKE '%assessment%' OR LOWER(j.title) LIKE '%instascope%' OR LOWER(j.title) LIKE '%inspection%'
             OR LOWER(j.title) LIKE '%mold test%' OR LOWER(j.title) LIKE '%air quality%' OR LOWER(j.title) LIKE '%air test%')
         ) as job_scheduled,
         false as job_scheduled_inferred,
+        -- Job completed: include 'archived' (matches getJobberFunnel)
         EXISTS (SELECT 1 FROM jobber_jobs j WHERE j.jobber_customer_id = jc.jobber_customer_id AND j.customer_id = jc.customer_id
-          AND j.status IN ('late', 'requires_invoicing')
+          AND j.status IN ('late', 'requires_invoicing', 'archived')
           AND NOT (LOWER(j.title) LIKE '%assessment%' OR LOWER(j.title) LIKE '%instascope%' OR LOWER(j.title) LIKE '%inspection%'
             OR LOWER(j.title) LIKE '%mold test%' OR LOWER(j.title) LIKE '%air quality%' OR LOWER(j.title) LIKE '%air test%')
         ) as job_completed,
@@ -2931,16 +3044,17 @@ async function getJobberLeadSpreadsheet(pool, customerId, startDate, endDate, so
         ${jcSourceWhere}
         AND jc.is_archived = false
     ),
-    -- Unmatched calls
+    -- Unmatched calls (no matching Jobber customer by phone)
     unmatched AS (
-      SELECT
+      SELECT DISTINCT ON (normalize_phone(c.caller_phone))
         NULL as hcp_customer_id,
         COALESCE(NULLIF(c.customer_name, ''), 'Caller ID: ' || normalize_phone(c.caller_phone)) as name,
         normalize_phone(c.caller_phone) as phone,
         c.start_time as contact_date,
         'unmatched' as match_status,
+        get_source_label(c.source, c.source_name, c.gclid) as source_label,
         'call' as lead_type,
-        COALESCE(c.ai_answered, CASE WHEN c.answered THEN 'answered' ELSE 'missed' END) as answer_status,
+        c.classified_status as answer_status,
         c.duration,
         false as inspection_scheduled,
         false as inspection_completed,
@@ -2954,6 +3068,7 @@ async function getJobberLeadSpreadsheet(pool, customerId, startDate, endDate, so
         false as revenue_closed,
         0::numeric as approved_revenue,
         0::numeric as invoiced_revenue,
+        0::numeric AS closed_rev,
         '[]'::json as invoice_breakdown,
         0::numeric as estimate_value,
         NULL as job_description,
@@ -2976,11 +3091,109 @@ async function getJobberLeadSpreadsheet(pool, customerId, startDate, endDate, so
         AND c.start_time::date BETWEEN $2::date AND $3::date
         ${crSourceWhere}
         AND NOT EXISTS (SELECT 1 FROM jobber_leads jl WHERE jl.phone = normalize_phone(c.caller_phone))
-        AND c.first_call = true
+      ORDER BY normalize_phone(c.caller_phone), c.start_time
+    ),
+    -- Unmatched form submissions (no Jobber record, no matching call)
+    unmatched_forms AS (
+      SELECT DISTINCT ON (normalize_phone(f.customer_phone))
+        NULL as hcp_customer_id,
+        COALESCE(NULLIF(TRIM(f.customer_name), ''), 'Form: ' || normalize_phone(f.customer_phone)) as name,
+        normalize_phone(f.customer_phone) as phone,
+        f.submitted_at as contact_date,
+        'unmatched' as match_status,
+        get_source_label(f.source, NULL, f.gclid) as source_label,
+        'form' as lead_type,
+        NULL as answer_status,
+        NULL::int as duration,
+        false as inspection_scheduled,
+        false as inspection_completed,
+        false as inspection_completed_inferred,
+        false as estimate_sent,
+        false as estimate_approved,
+        false as job_scheduled,
+        false as job_scheduled_inferred,
+        false as job_completed,
+        false as job_completed_inferred,
+        false as revenue_closed,
+        0::numeric as approved_revenue,
+        0::numeric as invoiced_revenue,
+        0::numeric AS closed_rev,
+        '[]'::json as invoice_breakdown,
+        0::numeric as estimate_value,
+        NULL as job_description,
+        NULL as service_address,
+        (SELECT cf.flag_reason FROM client_flagged_leads cf
+          WHERE cf.customer_id IN (SELECT customer_id FROM client_ids)
+            AND cf.phone_normalized = normalize_phone(f.customer_phone)
+          LIMIT 1) as client_flag_reason,
+        (SELECT cf.flagged_at FROM client_flagged_leads cf
+          WHERE cf.customer_id IN (SELECT customer_id FROM client_ids)
+            AND cf.phone_normalized = normalize_phone(f.customer_phone)
+          LIMIT 1) as client_flag_at,
+        (SELECT gc.lost_reason FROM ghl_contacts gc
+          WHERE gc.phone_normalized = normalize_phone(f.customer_phone)
+            AND gc.customer_id IN (SELECT customer_id FROM client_ids)
+            AND gc.lost_reason IS NOT NULL
+          LIMIT 1) as lost_reason
+      FROM form_submissions f
+      WHERE f.customer_id IN (SELECT customer_id FROM client_ids)
+        AND f.submitted_at::date BETWEEN $2::date AND $3::date
+        ${fmSourceWhere}
+        AND COALESCE(f.is_spam, false) = false
+        AND normalize_phone(f.customer_phone) IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM jobber_leads jl WHERE jl.phone = normalize_phone(f.customer_phone))
+        AND NOT EXISTS (SELECT 1 FROM unmatched u WHERE u.phone = normalize_phone(f.customer_phone))
+      ORDER BY normalize_phone(f.customer_phone), f.submitted_at DESC
+    ),
+    -- GHL contacts with GCLIDs not captured by Jobber/CallRail/forms
+    unmatched_ghl AS (
+      SELECT DISTINCT ON (gc.phone_normalized)
+        NULL as hcp_customer_id,
+        COALESCE(NULLIF(TRIM(COALESCE(gc.first_name,'') || ' ' || COALESCE(gc.last_name,'')), ''), 'Unknown') as name,
+        gc.phone_normalized as phone,
+        gc.date_added as contact_date,
+        'unmatched' as match_status,
+        COALESCE(get_source_label(gc.source, NULL, gc.gclid), 'GHL') as source_label,
+        'form' as lead_type,
+        NULL as answer_status,
+        NULL::int as duration,
+        false as inspection_scheduled,
+        false as inspection_completed,
+        false as inspection_completed_inferred,
+        false as estimate_sent,
+        false as estimate_approved,
+        false as job_scheduled,
+        false as job_scheduled_inferred,
+        false as job_completed,
+        false as job_completed_inferred,
+        false as revenue_closed,
+        0::numeric as approved_revenue,
+        0::numeric as invoiced_revenue,
+        0::numeric AS closed_rev,
+        '[]'::json as invoice_breakdown,
+        0::numeric as estimate_value,
+        NULL as job_description,
+        NULL as service_address,
+        NULL as client_flag_reason,
+        NULL::timestamptz as client_flag_at,
+        gc.lost_reason
+      FROM ghl_contacts gc
+      WHERE gc.customer_id IN (SELECT customer_id FROM client_ids)
+        ${source === 'google_ads' ? "AND gc.gclid IS NOT NULL AND gc.gclid != ''" : ''}
+        AND gc.phone_normalized IS NOT NULL AND gc.phone_normalized != ''
+        AND gc.date_added::date BETWEEN $2::date AND $3::date
+        AND NOT EXISTS (SELECT 1 FROM jobber_leads jl WHERE jl.phone = gc.phone_normalized)
+        AND NOT EXISTS (SELECT 1 FROM unmatched u WHERE u.phone = gc.phone_normalized)
+        AND NOT EXISTS (SELECT 1 FROM unmatched_forms uf WHERE uf.phone = gc.phone_normalized)
+      ORDER BY gc.phone_normalized, gc.date_added DESC
     )
     SELECT * FROM jobber_leads
     UNION ALL
     SELECT * FROM unmatched
+    UNION ALL
+    SELECT * FROM unmatched_forms
+    UNION ALL
+    SELECT * FROM unmatched_ghl
     ORDER BY contact_date DESC
   `, [customerId, startDate, endDate]);
   return rows;
@@ -3251,7 +3464,7 @@ fastify.get('/clients/:customerId/lead-detail/:hcpCustomerId', async (request) =
         (SELECT json_build_object(
           'start_time', c.start_time,
           'duration', c.duration,
-          'answered', COALESCE(c.ai_answered, CASE WHEN c.answered THEN 'answered' ELSE 'missed' END),
+          'answered', c.classified_status,
           'source', c.source,
           'source_name', c.source_name
         ) FROM calls c WHERE c.callrail_id = jc.callrail_id LIMIT 1) as call_info
@@ -3331,7 +3544,7 @@ fastify.get('/clients/:customerId/lead-detail/:hcpCustomerId', async (request) =
       (SELECT json_build_object(
         'start_time', c.start_time,
         'duration', c.duration,
-        'answered', COALESCE(c.ai_answered, CASE WHEN c.answered THEN 'answered' ELSE 'missed' END),
+        'answered', c.classified_status,
         'source', c.source,
         'source_name', c.source_name
       ) FROM calls c WHERE c.callrail_id = hc.callrail_id LIMIT 1) as call_info,
@@ -3711,38 +3924,38 @@ fastify.get('/clients/:customerId/seo-monthly-trend', async (request) => {
   const { customerId } = request.params;
   const months = parseInt(request.query.months) || 24;
 
-  const { rows } = await pool.query(`
-    WITH month_series AS (
-      SELECT generate_series(
-        date_trunc('month', CURRENT_DATE - INTERVAL '${months} months'),
-        date_trunc('month', CURRENT_DATE),
-        '1 month'::interval
-      )::date AS month_start
-    ),
-    seo_leads_per_month AS (
-      SELECT
-        date_trunc('month', first_quality_call_date)::date AS month_start,
-        COUNT(*) AS lead_count
-      FROM v_seo_quality_callers
-      WHERE customer_id = $1
-      GROUP BY 1
-      UNION ALL
-      SELECT
-        date_trunc('month', first_submission_date)::date AS month_start,
-        COUNT(*) AS lead_count
-      FROM v_seo_quality_form_submitters
-      WHERE customer_id = $1
-      GROUP BY 1
-    )
-    SELECT
-      ms.month_start,
-      to_char(ms.month_start, 'Mon YYYY') AS short_label,
-      COALESCE(SUM(slm.lead_count), 0)::int AS leads
-    FROM month_series ms
-    LEFT JOIN seo_leads_per_month slm ON slm.month_start = ms.month_start
-    GROUP BY ms.month_start
-    ORDER BY ms.month_start
-  `, [customerId]);
+  // Generate list of months to query, ensuring chart values match the funnel card exactly
+  // by calling getHcpFunnel once per month with the same logic (repeat-caller filter,
+  // GHL spam lists, 20% abandoned rule, etc.)
+  const monthList = [];
+  const now = new Date();
+  for (let i = months; i >= 0; i--) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    const start = d.toISOString().slice(0, 10);
+    const end = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).toISOString().slice(0, 10);
+    const label = d.toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' });
+    monthList.push({ month_start: start, end, short_label: label });
+  }
+
+  const cidCTE = `WITH client_ids AS (SELECT customer_id FROM clients WHERE customer_id = ${customerId} OR parent_customer_id = ${customerId})`;
+  const sourceWhere = `AND NOT is_paid_source(c.source)`;
+  const extraSpamRes = await pool.query(`SELECT extra_spam_keywords FROM clients WHERE customer_id = $1`, [customerId]);
+  const extraSpam = extraSpamRes.rows[0]?.extra_spam_keywords || null;
+
+  const rows = await Promise.all(monthList.map(async (m) => {
+    const dateWhere = `AND lead_date BETWEEN '${m.month_start}'::date AND '${m.end}'::date`;
+    try {
+      const f = await getHcpFunnel(pool, customerId, [], dateWhere, sourceWhere, cidCTE, extraSpam);
+      return {
+        month_start: m.month_start,
+        short_label: m.short_label,
+        leads: parseInt(f.quality_leads) || 0,
+        contacts: parseInt(f.total_contacts) || 0,
+      };
+    } catch (err) {
+      return { month_start: m.month_start, short_label: m.short_label, leads: 0, contacts: 0 };
+    }
+  }));
 
   // Get SEO start date and baseline for reference
   const { rows: cpRows } = await pool.query(

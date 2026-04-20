@@ -2790,7 +2790,7 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
     qualityPhones = Array.from(new Set([...qualityPhones, ...lsaPhones]));
   }
   const qualityPhoneSet = new Set(qualityPhones);
-  let filtered = rows.filter(r => r.phone && qualityPhoneSet.has(r.phone));
+  let filtered = rows.filter(r => r.phone);
   
   // Find phones that have a matched HCP record in mv_funnel_leads but only unmatched in drawer rows
   // (happens when drawer SQL excludes them via GHL spam filter without CRM activity rescue)
@@ -2911,6 +2911,7 @@ fastify.get('/clients/:customerId/lead-spreadsheet', async (request) => {
     if (lead.phone && reactivatedSet.has(lead.phone)) lead.reactivated = true;
   }
   
+  for (const lead of filtered) { lead.excluded_from_quality = !qualityPhoneSet.has(lead.phone); }
   filtered.sort((a, b) => new Date(b.contact_date) - new Date(a.contact_date));
   return filtered;
 });
